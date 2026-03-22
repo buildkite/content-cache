@@ -15,6 +15,7 @@ import (
 
 	"github.com/alecthomas/kong"
 	"github.com/lmittmann/tint"
+	"github.com/wolfeidau/content-cache/auth"
 	"github.com/wolfeidau/content-cache/credentials"
 	"github.com/wolfeidau/content-cache/credentials/opprovider"
 	"github.com/wolfeidau/content-cache/server"
@@ -36,9 +37,10 @@ type ServeCmd struct {
 	TLSCertFile   string `kong:"name='tls-cert',env='TLS_CERT_FILE',type='existingfile',help='Path to TLS certificate file (enables HTTPS)',group='Server'"`
 	TLSKeyFile    string `kong:"name='tls-key',env='TLS_KEY_FILE',type='existingfile',help='Path to TLS private key file (enables HTTPS)',group='Server'"`
 
-	AuthToken       string `kong:"name='auth-token',env='AUTH_TOKEN',help='Bearer token for inbound authentication',group='Auth'"`
-	AuthTokenFile   string `kong:"name='auth-token-file',env='AUTH_TOKEN_FILE',type='existingfile',help='Path to file containing auth token (for k8s secret mounts)',group='Auth'"`
-	CredentialsFile string `kong:"name='credentials-file',env='CREDENTIALS_FILE',type='existingfile',help='Path to credentials template file for upstream auth',group='Auth'"`
+	AuthToken        string `kong:"name='auth-token',env='AUTH_TOKEN',help='Bearer token for inbound authentication (mutually exclusive with --oidc-policies)',group='Auth'"`
+	AuthTokenFile    string `kong:"name='auth-token-file',env='AUTH_TOKEN_FILE',type='existingfile',help='Path to file containing auth token (for k8s secret mounts)',group='Auth'"`
+	CredentialsFile  string `kong:"name='credentials-file',env='CREDENTIALS_FILE',type='existingfile',help='Path to credentials template file for upstream auth',group='Auth'"`
+	OIDCPoliciesFile string `kong:"name='oidc-policies',env='OIDC_POLICIES_FILE',type='existingfile',help='Path to OIDC trust policies JSON file (mutually exclusive with --auth-token)',group='Auth'"`
 
 	GoUpstream       string `kong:"name='go-upstream',env='GO_UPSTREAM',help='Upstream Go module proxy URL (default: proxy.golang.org)',group='Upstream'"`
 	NPMUpstream      string `kong:"name='npm-upstream',env='NPM_UPSTREAM',help='Upstream NPM registry URL (default: registry.npmjs.org)',group='Upstream'"`
@@ -179,9 +181,33 @@ func (cmd *ServeCmd) Run() error {
 		authToken = creds.AuthToken
 	}
 
-	logger.Info("inbound auth", "enabled", authToken != "")
+	// OIDC policies and static bearer token are mutually exclusive.
+	if authToken != "" && cmd.OIDCPoliciesFile != "" {
+		return fmt.Errorf("--auth-token and --oidc-policies are mutually exclusive")
+	}
 
-	// Warn if auth enabled without TLS
+	// Initialize OIDC validator if a policies file is provided.
+	var oidcValidator *auth.OIDCValidator
+	if cmd.OIDCPoliciesFile != "" {
+		policies, err := auth.LoadPoliciesFromFile(cmd.OIDCPoliciesFile)
+		if err != nil {
+			return fmt.Errorf("loading OIDC policies: %w", err)
+		}
+		oidcCtx, oidcCancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer oidcCancel()
+		oidcValidator, err = auth.NewOIDCValidator(oidcCtx, policies, logger)
+		if err != nil {
+			return fmt.Errorf("initializing OIDC validator: %w", err)
+		}
+		logger.Info("OIDC auth enabled", "policies", len(policies))
+		if cmd.TLSCertFile == "" {
+			logger.Warn("OIDC auth configured without TLS — tokens will be transmitted in plaintext")
+		}
+	}
+
+	logger.Info("inbound auth", "enabled", authToken != "" || oidcValidator != nil)
+
+	// Warn if static token auth enabled without TLS
 	if authToken != "" && cmd.TLSCertFile == "" {
 		logger.Warn("auth token configured without TLS — bearer tokens will be transmitted in plaintext")
 	}
@@ -193,6 +219,7 @@ func (cmd *ServeCmd) Run() error {
 		TLSCertFile:           cmd.TLSCertFile,
 		TLSKeyFile:            cmd.TLSKeyFile,
 		AuthToken:             authToken,
+		OIDCValidator:         oidcValidator,
 		Credentials:           creds,
 		UpstreamGoProxy:       cmd.GoUpstream,
 		UpstreamNPMRegistry:   cmd.NPMUpstream,

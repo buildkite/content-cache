@@ -1,0 +1,52 @@
+{
+  "trust_policies": [
+    {
+      "name": "buildkite-myorg-cache",
+      "issuer": "https://agent.buildkite.com",
+      "audience": ["https://cache.example.com"],
+      "required_claims": {
+        "organization_slug": "myorg"
+      },
+      "permissions": ["goproxy", "buildcache", "npm"]
+    },
+    {
+      "name": "buildkite-myorg-deploy-pipeline",
+      "issuer": "https://agent.buildkite.com",
+      "audience": ["https://cache.example.com"],
+      "required_claims": {
+        "organization_slug": "myorg",
+        "pipeline_slug": "deploy"
+      },
+      "permissions": ["goproxy", "buildcache", "npm", "oci"]
+    },
+    {
+      "name": "github-actions-myorg",
+      "issuer": "https://token.actions.githubusercontent.com",
+      "audience": ["https://cache.example.com"],
+      "required_claims": {
+        "repository_owner": "myorg",
+        "ref": "refs/heads/*"
+      },
+      "permissions": ["goproxy", "npm"]
+    },
+    {
+      "name": "github-actions-myorg-full",
+      "issuer": "https://token.actions.githubusercontent.com",
+      "audience": ["https://cache.example.com"],
+      "required_claims": {
+        "repository_owner": "myorg"
+      },
+      "permissions": ["*"]
+    },
+    {
+      "name": "buildkite-ops-admin",
+      "issuer": "https://agent.buildkite.com",
+      "audience": ["https://cache.example.com"],
+      "required_claims": {
+        "organization_slug": "myorg",
+        "pipeline_slug": "ops"
+      },
+      "permissions": ["admin"]
+    }
+  ]
+}
