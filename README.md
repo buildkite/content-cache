@@ -49,11 +49,8 @@ Queue state is persisted in bbolt, so eviction is warm across restarts — the m
 go build -o content-cache ./cmd/content-cache
 ./content-cache serve --listen :8080 --storage ./cache
 
-# Configure Go to use the cache (option 1: with /goproxy prefix)
+# Configure Go to use the cache
 export GOPROXY=http://localhost:8080/goproxy,direct
-
-# Or use directly at root (option 2: no prefix needed)
-# export GOPROXY=http://localhost:8080,direct
 
 # Downloads are now cached locally
 go get github.com/pkg/errors@v0.9.1  # First request: ~12ms (upstream)
@@ -166,7 +163,7 @@ go build ./...  # Subsequent builds on any machine: artifacts served from server
 - **Download Deduplication**: Singleflight-based coalescing of concurrent requests for the same uncached resource
 - **Pull-Through Caching**: Fetches from upstream on cache miss, caches for future requests
 - **Cache Expiration**: TTL-based expiration with S3-FIFO size-based eviction (lower miss ratios by filtering one-hit-wonders from polluting the main cache)
-- **Inbound Authentication**: Bearer token auth middleware protecting all endpoints (except `/health` and `/metrics`), configurable via `--auth-token` or `--auth-token-file`
+- **Inbound Authentication**: Static Bearer token auth (`--auth-token` / `--auth-token-file`) or OIDC token validation (`--oidc-policies`) with per-protocol permission policies for CI/CD pipelines (GitHub Actions, Buildkite, GitLab CI). All endpoints except `/health` and `/metrics` are protected.
 - **Upstream Credentials**: Template-based credentials file (`--credentials-file`) with routing tables for per-scope (NPM) and per-repo-prefix (Git) credential selection, plus multi-registry OCI auth. Supports pluggable secret providers (environment variables, files, 1Password CLI)
 - **Routing Tables**: NPM scope-based and Git repo-prefix-based routing with catch-all fallback, validated at startup
 - **Health & Stats Endpoints**: `/health` for liveness checks, `/stats` for cache statistics
@@ -205,7 +202,7 @@ graph TD
 
     E --> F[Storage Backend]
 
-    A -.-> A1["/goproxy/* or /*"]
+    A -.-> A1["/goproxy/*"]
     A -.-> A9["/sumdb/*"]
     A -.-> A2["/npm/*"]
     A -.-> A3["/v2/*"]
@@ -245,13 +242,71 @@ Configuration is available via command-line flags or environment variables. Envi
 
 | Flag | Environment Variable | Default | Description |
 |------|---------------------|---------|-------------|
-| `--auth-token` | `AUTH_TOKEN` | | Bearer token for inbound authentication |
+| `--auth-token` | `AUTH_TOKEN` | | Static Bearer token for inbound authentication (mutually exclusive with `--oidc-policies`) |
 | `--auth-token-file` | `AUTH_TOKEN_FILE` | | Path to file containing auth token (for k8s secret mounts) |
+| `--oidc-policies` | `OIDC_POLICIES_FILE` | | Path to OIDC trust policies JSON file (mutually exclusive with `--auth-token`) |
 | `--credentials-file` | `CREDENTIALS_FILE` | | Path to credentials template file for upstream auth |
 
 When `--auth-token` is set, all requests (except `/health` and `/metrics`) require an `Authorization: Bearer <token>` header. The token can also be provided via the `auth_token` field in the credentials file; the CLI flag takes precedence.
 
+When `--oidc-policies` is set, requests must present a valid OIDC Bearer token whose claims match a trust policy that grants access to the requested protocol. See [OIDC Authentication](#oidc-authentication) below.
+
 When `--credentials-file` is set, the file is parsed as a Go template that produces JSON. Template functions resolve secrets from environment variables (`env`), files (`file`), or external stores like 1Password CLI (`op`). See the [Credentials File](#credentials-file) section for the full schema.
+
+### OIDC Authentication
+
+OIDC authentication allows CI/CD pipelines to use short-lived identity tokens rather than long-lived static secrets. Tokens are validated against the issuer's JWKS endpoint and then matched against trust policies that control per-protocol access.
+
+**Trust policy file** (`--oidc-policies`):
+
+```json
+{
+  "trust_policies": [
+    {
+      "name": "buildkite-myorg",
+      "issuer": "https://agent.buildkite.com",
+      "audience": ["https://cache.example.com"],
+      "required_claims": {
+        "organization_slug": "myorg"
+      },
+      "permissions": ["goproxy", "npm", "buildcache"]
+    },
+    {
+      "name": "github-actions-myorg",
+      "issuer": "https://token.actions.githubusercontent.com",
+      "audience": ["https://cache.example.com"],
+      "required_claims": {
+        "repository_owner": "myorg",
+        "ref": "refs/heads/*"
+      },
+      "permissions": ["goproxy", "npm"]
+    }
+  ]
+}
+```
+
+**Policy fields:**
+
+| Field | Description |
+|-------|-------------|
+| `name` | Human-readable policy name (appears in logs) |
+| `issuer` | OIDC issuer URL — must match the `iss` claim exactly |
+| `audience` | Allowed audience values — must match the `aud` claim. Omitting this field skips audience validation (not recommended) |
+| `required_claims` | Map of claim name → expected value. Supports `*` wildcard suffix (e.g. `"refs/heads/*"`) and lists |
+| `permissions` | Protocol names this policy grants: `goproxy`, `npm`, `oci`, `pypi`, `maven`, `rubygems`, `git`, `sumdb`, `buildcache`, `admin`. Use `"*"` to grant all. |
+
+**Using OIDC tokens in CI/CD:**
+
+Buildkite — request an OIDC token via the [Buildkite Agent OIDC plugin](https://buildkite.com/docs/agent/v3/cli-oidc) and pass it as a Bearer token:
+
+```bash
+TOKEN=$(buildkite-agent oidc request-token --audience https://cache.example.com)
+export GOPROXY=http://cache.example.com/goproxy
+export GONOSUMCHECK=*
+curl -H "Authorization: Bearer $TOKEN" http://cache.example.com/goproxy/...
+```
+
+GitHub Actions — the `id-token: write` permission exposes `ACTIONS_ID_TOKEN_REQUEST_URL`. Most package managers support setting a Bearer token via environment variables or config files; pass the token from `${{ steps.auth.outputs.token }}`.
 
 ### Upstream Registry Options
 

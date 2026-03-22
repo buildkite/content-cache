@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/wolfeidau/content-cache/auth"
 	"github.com/wolfeidau/content-cache/backend"
 	"github.com/wolfeidau/content-cache/credentials"
 	"github.com/wolfeidau/content-cache/download"
@@ -43,7 +44,13 @@ type Config struct {
 
 	// AuthToken is the bearer token for inbound authentication.
 	// When empty, authentication is disabled.
+	// Mutually exclusive with OIDCValidator.
 	AuthToken string
+
+	// OIDCValidator validates OIDC Bearer tokens against trust policies.
+	// When set, OIDC auth is used instead of the static AuthToken.
+	// Mutually exclusive with AuthToken.
+	OIDCValidator *auth.OIDCValidator
 
 	// Credentials holds resolved upstream credentials from the credentials file.
 	// When nil, all protocols use their default upstreams with no auth.
@@ -191,6 +198,9 @@ func openMetaBackend(cfg Config) (metadb.MetaDB, func() (s3fifo.Queues, error), 
 
 // New creates a new server with the given configuration.
 func New(cfg Config) (*Server, error) {
+	if cfg.AuthToken != "" && cfg.OIDCValidator != nil {
+		return nil, fmt.Errorf("AuthToken and OIDCValidator are mutually exclusive")
+	}
 	if cfg.Logger == nil {
 		cfg.Logger = slog.Default()
 	}
@@ -674,13 +684,23 @@ func New(cfg Config) (*Server, error) {
 
 	s.httpServer = &http.Server{
 		Addr:         cfg.Address,
-		Handler:      s.loggingMiddleware(s.authMiddleware(mux)),
+		Handler:      s.loggingMiddleware(s.selectAuthMiddleware(mux)),
 		ReadTimeout:  30 * time.Second,
 		WriteTimeout: 5 * time.Minute, // Long timeout for large zip downloads
 		IdleTimeout:  60 * time.Second,
 	}
 
 	return s, nil
+}
+
+// selectAuthMiddleware returns the appropriate auth middleware based on config.
+// When OIDCValidator is set, OIDC validation is used. Otherwise, the static
+// bearer token middleware is used (which is a no-op when AuthToken is empty).
+func (s *Server) selectAuthMiddleware(next http.Handler) http.Handler {
+	if s.config.OIDCValidator != nil {
+		return s.oidcMiddleware(next)
+	}
+	return s.authMiddleware(next)
 }
 
 // withProtocol returns middleware that sets the protocol tag on the request.
@@ -751,10 +771,6 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	mux.Handle("GET /buildcache/", buildcacheHndlr)
 	mux.Handle("PUT /buildcache/", buildcacheHndlr)
 
-	// Also support serving at root for direct GOPROXY usage
-	// This allows: GOPROXY=http://localhost:8080
-	// NOTE: This catch-all must be registered last.
-	mux.Handle("GET /{module...}", withProtocol("goproxy", s.goproxy))
 }
 
 // handleHealth handles health check requests.
