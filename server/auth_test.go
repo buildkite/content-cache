@@ -56,7 +56,7 @@ func TestAuthMiddleware_InvalidToken(t *testing.T) {
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 	require.Equal(t, http.StatusUnauthorized, rec.Code)
-	require.Equal(t, "Bearer", rec.Header().Get("WWW-Authenticate"))
+	require.Equal(t, `Bearer, Basic realm="content-cache"`, rec.Header().Get("WWW-Authenticate"))
 
 	var body map[string]string
 	err := json.NewDecoder(rec.Body).Decode(&body)
@@ -76,14 +76,27 @@ func TestAuthMiddleware_MissingHeader(t *testing.T) {
 	require.Equal(t, http.StatusUnauthorized, rec.Code)
 }
 
-func TestAuthMiddleware_WrongScheme(t *testing.T) {
+func TestAuthMiddleware_BasicAuth_ValidToken(t *testing.T) {
 	s := &Server{config: Config{AuthToken: "test-token-123"}}
 	handler := s.authMiddleware(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
 
 	req := httptest.NewRequest(http.MethodGet, "/npm/react", nil)
-	req.Header.Set("Authorization", "Basic dXNlcjpwYXNz")
+	req.SetBasicAuth("user", "test-token-123")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	require.Equal(t, http.StatusOK, rec.Code)
+}
+
+func TestAuthMiddleware_BasicAuth_WrongPassword(t *testing.T) {
+	s := &Server{config: Config{AuthToken: "test-token-123"}}
+	handler := s.authMiddleware(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	req := httptest.NewRequest(http.MethodGet, "/npm/react", nil)
+	req.SetBasicAuth("user", "wrong-token")
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 	require.Equal(t, http.StatusUnauthorized, rec.Code)
@@ -274,7 +287,44 @@ func TestOIDCMiddleware_MissingAuthHeader(t *testing.T) {
 	require.Equal(t, http.StatusUnauthorized, rec.Code)
 }
 
-func TestOIDCMiddleware_NonBearerScheme(t *testing.T) {
+func TestExtractToken(t *testing.T) {
+	cases := []struct {
+		name      string
+		header    string
+		wantToken string
+		wantOK    bool
+	}{
+		{"bearer lowercase", "bearer mytoken", "mytoken", true},
+		{"bearer uppercase", "BEARER mytoken", "mytoken", true},
+		{"bearer canonical", "Bearer mytoken", "mytoken", true},
+		{"bearer empty token", "Bearer ", "", false},
+		{"basic valid", "", "", false}, // set via SetBasicAuth below
+		{"basic malformed base64", "Basic !!!notbase64!!!", "", false},
+		{"digest scheme", "Digest abc123", "", false},
+		{"no header", "", "", false},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, "/", nil)
+			if tc.name == "basic valid" {
+				req.SetBasicAuth("user", "mytoken")
+				token, ok := extractToken(req)
+				require.True(t, ok)
+				require.Equal(t, "mytoken", token)
+				return
+			}
+			if tc.header != "" {
+				req.Header.Set("Authorization", tc.header)
+			}
+			token, ok := extractToken(req)
+			require.Equal(t, tc.wantOK, ok)
+			require.Equal(t, tc.wantToken, token)
+		})
+	}
+}
+
+func TestOIDCMiddleware_BasicAuth_InvalidToken(t *testing.T) {
 	oidcProvider := newTestOIDCProvider(t)
 	s := &Server{
 		config: Config{OIDCValidator: oidcProvider.validator(t, []string{"goproxy"})},
@@ -284,11 +334,49 @@ func TestOIDCMiddleware_NonBearerScheme(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	}))
 
+	// Basic auth with a non-JWT password is rejected during OIDC validation.
 	req := httptest.NewRequest(http.MethodGet, "/goproxy/github.com/foo/bar/@v/list", nil)
-	req.Header.Set("Authorization", "Basic dXNlcjpwYXNz")
+	req.SetBasicAuth("user", "not-a-valid-jwt")
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 	require.Equal(t, http.StatusUnauthorized, rec.Code)
+}
+
+func TestOIDCMiddleware_UnknownScheme(t *testing.T) {
+	oidcProvider := newTestOIDCProvider(t)
+	s := &Server{
+		config: Config{OIDCValidator: oidcProvider.validator(t, []string{"goproxy"})},
+		logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+	}
+	handler := s.oidcMiddleware(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	// An unsupported scheme (e.g. Digest) is not extracted as a token → 401.
+	req := httptest.NewRequest(http.MethodGet, "/goproxy/github.com/foo/bar/@v/list", nil)
+	req.Header.Set("Authorization", "Digest abc123")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	require.Equal(t, http.StatusUnauthorized, rec.Code)
+}
+
+func TestOIDCMiddleware_BasicAuth_ValidToken(t *testing.T) {
+	oidcProvider := newTestOIDCProvider(t)
+	s := &Server{
+		config: Config{OIDCValidator: oidcProvider.validator(t, []string{"goproxy"})},
+		logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+	}
+	handler := s.oidcMiddleware(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	// Basic auth where password = valid OIDC token (e.g. pip using __token__:$CACHE_TOKEN).
+	token := oidcProvider.token(t, []string{"test-audience"})
+	req := httptest.NewRequest(http.MethodGet, "/goproxy/github.com/foo/bar/@v/list", nil)
+	req.SetBasicAuth("__token__", token)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	require.Equal(t, http.StatusOK, rec.Code)
 }
 
 func TestOIDCMiddleware_InvalidToken(t *testing.T) {

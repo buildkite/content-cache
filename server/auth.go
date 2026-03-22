@@ -10,7 +10,10 @@ import (
 	"github.com/wolfeidau/content-cache/telemetry"
 )
 
-// authMiddleware returns middleware that validates Bearer token authentication.
+// authMiddleware returns middleware that validates inbound authentication.
+// Accepts both "Authorization: Bearer <token>" and "Authorization: Basic base64(user:token)"
+// headers — the password field is treated as the token, enabling tools like pip, Maven,
+// and Bundler that cannot send Bearer headers.
 // When AuthToken is empty, the middleware is a no-op (allows unauthenticated access).
 // Exact paths /health and /metrics are exempt from authentication.
 //
@@ -31,14 +34,13 @@ func (s *Server) authMiddleware(next http.Handler) http.Handler {
 			return
 		}
 
-		authHeader := r.Header.Get("Authorization")
-		if !strings.HasPrefix(authHeader, "Bearer ") {
+		token, ok := extractToken(r)
+		if !ok {
 			unauthorizedResponse(w)
 			return
 		}
 
-		provided := []byte(strings.TrimPrefix(authHeader, "Bearer "))
-		if subtle.ConstantTimeCompare(provided, tokenBytes) != 1 {
+		if subtle.ConstantTimeCompare([]byte(token), tokenBytes) != 1 {
 			unauthorizedResponse(w)
 			return
 		}
@@ -47,7 +49,9 @@ func (s *Server) authMiddleware(next http.Handler) http.Handler {
 	})
 }
 
-// oidcMiddleware validates OIDC Bearer tokens against configured trust policies.
+// oidcMiddleware validates OIDC tokens against configured trust policies.
+// Accepts both Bearer and Basic auth (password = OIDC token), enabling tools like
+// pip, Maven, and Bundler that cannot send Bearer headers.
 // /health and /metrics are exempt. Other paths require a valid token whose
 // matched policy grants permission for the request's protocol.
 func (s *Server) oidcMiddleware(next http.Handler) http.Handler {
@@ -61,13 +65,12 @@ func (s *Server) oidcMiddleware(next http.Handler) http.Handler {
 
 		telemetry.SetProtocol(r, protocol)
 
-		authHeader := r.Header.Get("Authorization")
-		if !strings.HasPrefix(authHeader, "Bearer ") {
+		token, ok := extractToken(r)
+		if !ok {
 			telemetry.SetAuthOutcome(r, telemetry.AuthOutcomeUnauthorized)
 			unauthorizedResponse(w)
 			return
 		}
-		token := strings.TrimPrefix(authHeader, "Bearer ")
 
 		claims, err := s.config.OIDCValidator.ValidateToken(r.Context(), token)
 		if err != nil {
@@ -121,6 +124,21 @@ func protocolFromPath(path string) string {
 	}
 }
 
+// extractToken extracts a token from a request's Authorization header.
+// It accepts:
+//   - "Bearer <token>" (case-insensitive scheme)
+//   - "Basic base64(username:token)" — the password field is treated as the token,
+//     enabling tools like pip, Maven, and Bundler that only support Basic auth.
+func extractToken(r *http.Request) (string, bool) {
+	authHeader := r.Header.Get("Authorization")
+	if len(authHeader) > 7 && strings.EqualFold(authHeader[:7], "bearer ") {
+		token := authHeader[7:]
+		return token, token != ""
+	}
+	_, password, ok := r.BasicAuth()
+	return password, ok && password != ""
+}
+
 func forbiddenResponse(w http.ResponseWriter) {
 	w.Header().Set("WWW-Authenticate", `Bearer error="insufficient_scope"`)
 	w.Header().Set("Content-Type", "application/json")
@@ -129,7 +147,7 @@ func forbiddenResponse(w http.ResponseWriter) {
 }
 
 func unauthorizedResponse(w http.ResponseWriter) {
-	w.Header().Set("WWW-Authenticate", "Bearer")
+	w.Header().Set("WWW-Authenticate", `Bearer, Basic realm="content-cache"`)
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusUnauthorized)
 	json.NewEncoder(w).Encode(map[string]string{"error": "unauthorized"}) //nolint:errcheck

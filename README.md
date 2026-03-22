@@ -163,7 +163,7 @@ go build ./...  # Subsequent builds on any machine: artifacts served from server
 - **Download Deduplication**: Singleflight-based coalescing of concurrent requests for the same uncached resource
 - **Pull-Through Caching**: Fetches from upstream on cache miss, caches for future requests
 - **Cache Expiration**: TTL-based expiration with S3-FIFO size-based eviction (lower miss ratios by filtering one-hit-wonders from polluting the main cache)
-- **Inbound Authentication**: Static Bearer token auth (`--auth-token` / `--auth-token-file`) or OIDC token validation (`--oidc-policies`) with per-protocol permission policies for CI/CD pipelines (GitHub Actions, Buildkite, GitLab CI). All endpoints except `/health` and `/metrics` are protected.
+- **Inbound Authentication**: Static token auth (`--auth-token` / `--auth-token-file`) or OIDC token validation (`--oidc-policies`) with per-protocol permission policies for CI/CD pipelines (GitHub Actions, Buildkite, GitLab CI). Accepts both `Authorization: Bearer <token>` and `Authorization: Basic` (password = token), enabling tools like pip, Maven, and Bundler that cannot send Bearer headers. All endpoints except `/health` and `/metrics` are protected.
 - **Upstream Credentials**: Template-based credentials file (`--credentials-file`) with routing tables for per-scope (NPM) and per-repo-prefix (Git) credential selection, plus multi-registry OCI auth. Supports pluggable secret providers (environment variables, files, 1Password CLI)
 - **Routing Tables**: NPM scope-based and Git repo-prefix-based routing with catch-all fallback, validated at startup
 - **Health & Stats Endpoints**: `/health` for liveness checks, `/stats` for cache statistics
@@ -247,9 +247,46 @@ Configuration is available via command-line flags or environment variables. Envi
 | `--oidc-policies` | `OIDC_POLICIES_FILE` | | Path to OIDC trust policies JSON file (mutually exclusive with `--auth-token`) |
 | `--credentials-file` | `CREDENTIALS_FILE` | | Path to credentials template file for upstream auth |
 
-When `--auth-token` is set, all requests (except `/health` and `/metrics`) require an `Authorization: Bearer <token>` header. The token can also be provided via the `auth_token` field in the credentials file; the CLI flag takes precedence.
+When `--auth-token` is set, all requests (except `/health` and `/metrics`) require authentication. Both `Authorization: Bearer <token>` and `Authorization: Basic base64(username:token)` are accepted — the password field is treated as the token. Basic auth support enables tools like pip, Maven, and Bundler that cannot send Bearer headers. The token can also be provided via the `auth_token` field in the credentials file; the CLI flag takes precedence.
 
-When `--oidc-policies` is set, requests must present a valid OIDC Bearer token whose claims match a trust policy that grants access to the requested protocol. See [OIDC Authentication](#oidc-authentication) below.
+**Configuring tools with Basic auth** (use any string as the username; the token goes in the password field):
+
+```bash
+# pip — embed credentials in the index URL
+pip install --index-url http://x-token:$CACHE_TOKEN@cache.example.com/pypi/simple/ requests
+
+# pip — or set via environment variable (PEP 503)
+export PIP_INDEX_URL=http://x-token:$CACHE_TOKEN@cache.example.com/pypi/simple/
+pip install requests
+```
+
+```xml
+<!-- Maven — add a <server> block in ~/.m2/settings.xml -->
+<settings>
+  <servers>
+    <server>
+      <id>content-cache</id>
+      <username>x-token</username>
+      <password>${env.CACHE_TOKEN}</password>
+    </server>
+  </servers>
+  <mirrors>
+    <mirror>
+      <id>content-cache</id>
+      <mirrorOf>central</mirrorOf>
+      <url>http://cache.example.com/maven</url>
+    </mirror>
+  </mirrors>
+</settings>
+```
+
+```bash
+# Bundler — embed credentials in the mirror URL
+bundle config set --global mirror.https://rubygems.org \
+  http://x-token:$CACHE_TOKEN@cache.example.com/rubygems/
+```
+
+When `--oidc-policies` is set, requests must present a valid OIDC token whose claims match a trust policy that grants access to the requested protocol. Both Bearer and Basic auth (password = OIDC token) are accepted. See [OIDC Authentication](#oidc-authentication) below.
 
 When `--credentials-file` is set, the file is parsed as a Go template that produces JSON. Template functions resolve secrets from environment variables (`env`), files (`file`), or external stores like 1Password CLI (`op`). See the [Credentials File](#credentials-file) section for the full schema.
 
