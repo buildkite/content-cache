@@ -66,7 +66,11 @@ When adding a new protocol:
 - **Testing**: Use `testify/require` for assertions
 - **Error handling**: Return errors up the stack, log at top level only
 - **Package names**: Lowercase, descriptive (goproxy, npm, oci, pypi, maven, git)
-- **Contexts**: Pass contexts for cancellation and tracing throughout
+- **Context scopes**: Three distinct scopes exist — do not mix them up:
+  - `r.Context()` — request-scoped; cancelled when the HTTP request ends. Use for all synchronous work inside a handler.
+  - `h.ctx` — handler-scoped; cancelled when the server shuts down (`h.cancel()` in `Close()`). Use for background goroutines spawned by a handler so they are cancelled cleanly on shutdown.
+  - `context.Background()` — unbounded; use only when neither of the above applies. Do NOT use this for handler background goroutines.
+  - Background goroutines must always use `context.WithTimeout(h.ctx, cacheTimeout)`, not `context.WithTimeout(context.Background(), cacheTimeout)`.
 - **Options pattern**: Use functional options for configurable types (see `WithLogger`, `WithUpstream`)
 - **Metrics**: Every feature must ship with metrics. Request-lifecycle attributes (protocol, outcome, endpoint) go on `RequestTags` via setters in `telemetry/tags.go`; recording happens in `RecordHTTP` / `RecordBackendOp`. Do not call metrics APIs directly from handlers or middleware — set tags instead.
 

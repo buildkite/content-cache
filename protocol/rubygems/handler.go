@@ -605,7 +605,7 @@ func (h *Handler) handleGemspec(w http.ResponseWriter, r *http.Request) {
 		defer h.wg.Done()
 		defer func() { _ = os.Remove(tmpPath) }()
 
-		cacheCtx, cancel := context.WithTimeout(context.Background(), cacheTimeout)
+		cacheCtx, cancel := context.WithTimeout(h.ctx, cacheTimeout)
 		defer cancel()
 
 		h.cacheGemspec(cacheCtx, parsed, contentHash, written, tmpPath, logger)
@@ -847,7 +847,7 @@ func (h *Handler) handleGemDirect(w http.ResponseWriter, r *http.Request, filena
 		defer h.wg.Done()
 		defer func() { _ = os.Remove(tmpPath) }()
 
-		cacheCtx, cancel := context.WithTimeout(context.Background(), cacheTimeout)
+		cacheCtx, cancel := context.WithTimeout(h.ctx, cacheTimeout)
 		defer cancel()
 
 		h.cacheGem(cacheCtx, filename, parsed, contentHash, written, computedSHA256, tmpPath, logger)
@@ -912,7 +912,7 @@ func (h *Handler) cacheVersionsAsync(meta *CachedVersions, content []byte, logge
 	h.wg.Add(1)
 	go func() {
 		defer h.wg.Done()
-		ctx, cancel := context.WithTimeout(context.Background(), cacheTimeout)
+		ctx, cancel := context.WithTimeout(h.ctx, cacheTimeout)
 		defer cancel()
 
 		if err := h.index.PutVersions(ctx, meta, content); err != nil {
@@ -927,7 +927,7 @@ func (h *Handler) cacheInfoAsync(gem string, meta *CachedGemInfo, content []byte
 	h.wg.Add(1)
 	go func() {
 		defer h.wg.Done()
-		ctx, cancel := context.WithTimeout(context.Background(), cacheTimeout)
+		ctx, cancel := context.WithTimeout(h.ctx, cacheTimeout)
 		defer cancel()
 
 		if err := h.index.PutInfo(ctx, gem, meta, content); err != nil {
@@ -942,7 +942,7 @@ func (h *Handler) cacheSpecsAsync(specsType string, meta *CachedSpecs, content [
 	h.wg.Add(1)
 	go func() {
 		defer h.wg.Done()
-		ctx, cancel := context.WithTimeout(context.Background(), cacheTimeout)
+		ctx, cancel := context.WithTimeout(h.ctx, cacheTimeout)
 		defer cancel()
 
 		if err := h.index.PutSpecs(ctx, specsType, meta, content); err != nil {

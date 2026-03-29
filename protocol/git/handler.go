@@ -208,6 +208,7 @@ func (h *Handler) handleInfoRefs(w http.ResponseWriter, r *http.Request, repo Re
 	logger := h.logger.With("repo", repo.String(), "endpoint", "info/refs")
 
 	telemetry.SetEndpoint(r, "info/refs")
+	telemetry.SetCacheResult(r, telemetry.CacheBypass)
 
 	// Reject git-receive-pack (push discovery)
 	if r.URL.Query().Get("service") == "git-receive-pack" {
