@@ -248,9 +248,7 @@ func (h *Handler) handleProject(w http.ResponseWriter, r *http.Request, project 
 	h.wg.Add(1)
 	go func() {
 		defer h.wg.Done()
-		// Use context.Background() for cache operations that should complete even during shutdown.
-		// The WaitGroup ensures we wait for this to finish before Close() returns.
-		cacheCtx, cancel := context.WithTimeout(context.Background(), cacheTimeout)
+		cacheCtx, cancel := context.WithTimeout(h.ctx, cacheTimeout)
 		defer cancel()
 		if err := h.index.PutCachedProject(cacheCtx, cached); err != nil {
 			logger.Error("failed to cache project metadata", "error", err)
@@ -530,7 +528,7 @@ func (h *Handler) handleFileDirect(w http.ResponseWriter, r *http.Request, proje
 		defer h.wg.Done()
 		defer func() { _ = os.Remove(tmpPath) }()
 
-		cacheCtx, cancel := context.WithTimeout(context.Background(), cacheTimeout)
+		cacheCtx, cancel := context.WithTimeout(h.ctx, cacheTimeout)
 		defer cancel()
 
 		h.cacheFile(cacheCtx, project, filename, contentHash, size, fileHashes, upstreamURL, requiresPython, tmpPath, logger)

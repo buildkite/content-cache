@@ -59,8 +59,17 @@ type Config struct {
 	// UpstreamGoProxy is the upstream Go module proxy URL
 	UpstreamGoProxy string
 
+	// GoProxyMetadataTTL is how long to cache Go module list responses.
+	// mod/info/zip are immutable and governed by blob retention instead.
+	// Default: 24h
+	GoProxyMetadataTTL time.Duration
+
 	// UpstreamNPMRegistry is the upstream NPM registry URL
 	UpstreamNPMRegistry string
+
+	// NPMMetadataTTL is how long to cache NPM package metadata.
+	// Default: 24h
+	NPMMetadataTTL time.Duration
 
 	// UpstreamOCIRegistry is the upstream OCI registry URL
 	UpstreamOCIRegistry string
@@ -321,6 +330,7 @@ func New(cfg Config) (*Server, error) {
 		Transport: telemetry.NewInstrumentedTransport(nil, "rubygems"),
 	}
 	gitHTTPClient := &http.Client{
+		Timeout:   10 * time.Minute,
 		Transport: telemetry.NewInstrumentedTransport(nil, "git"),
 	}
 
@@ -333,7 +343,7 @@ func New(cfg Config) (*Server, error) {
 	if err != nil {
 		return nil, fmt.Errorf("creating goproxy info index: %w", err)
 	}
-	goproxyListIndex, err := metadb.NewEnvelopeIndex(metaDB, "goproxy", "list", 24*time.Hour, withCodec)
+	goproxyListIndex, err := metadb.NewEnvelopeIndex(metaDB, "goproxy", "list", cfg.GoProxyMetadataTTL, withCodec)
 	if err != nil {
 		return nil, fmt.Errorf("creating goproxy list index: %w", err)
 	}
@@ -348,7 +358,7 @@ func New(cfg Config) (*Server, error) {
 	)
 
 	// Initialize npm components using metadb EnvelopeIndex
-	npmMetadataIndex, err := metadb.NewEnvelopeIndex(metaDB, "npm", "metadata", 24*time.Hour, withCodec)
+	npmMetadataIndex, err := metadb.NewEnvelopeIndex(metaDB, "npm", "metadata", cfg.NPMMetadataTTL, withCodec)
 	if err != nil {
 		return nil, fmt.Errorf("creating npm metadata index: %w", err)
 	}

@@ -55,6 +55,8 @@ type ServeCmd struct {
 	OCIPrefix string        `kong:"name='oci-prefix',default='docker-hub',env='OCI_PREFIX',help='Routing prefix for the OCI registry',group='OCI'"`
 	OCITagTTL time.Duration `kong:"name='oci-tag-ttl',default='5m',env='OCI_TAG_TTL',help='TTL for OCI tag->digest cache mappings',group='OCI'"`
 
+	GoProxyMetadataTTL  time.Duration `kong:"name='goproxy-metadata-ttl',default='24h',env='GOPROXY_METADATA_TTL',help='TTL for Go module list cache (immutable mod/info/zip use blob retention)',group='TTL'"`
+	NPMMetadataTTL      time.Duration `kong:"name='npm-metadata-ttl',default='24h',env='NPM_METADATA_TTL',help='TTL for NPM package metadata cache',group='TTL'"`
 	PyPIMetadataTTL     time.Duration `kong:"name='pypi-metadata-ttl',default='5m',env='PYPI_METADATA_TTL',help='TTL for PyPI project metadata cache',group='TTL'"`
 	MavenMetadataTTL    time.Duration `kong:"name='maven-metadata-ttl',default='5m',env='MAVEN_METADATA_TTL',help='TTL for maven-metadata.xml cache',group='TTL'"`
 	RubyGemsMetadataTTL time.Duration `kong:"name='rubygems-metadata-ttl',default='5m',env='RUBYGEMS_METADATA_TTL',help='TTL for RubyGems metadata cache',group='TTL'"`
@@ -222,7 +224,9 @@ func (cmd *ServeCmd) Run() error {
 		OIDCValidator:         oidcValidator,
 		Credentials:           creds,
 		UpstreamGoProxy:       cmd.GoUpstream,
+		GoProxyMetadataTTL:    cmd.GoProxyMetadataTTL,
 		UpstreamNPMRegistry:   cmd.NPMUpstream,
+		NPMMetadataTTL:        cmd.NPMMetadataTTL,
 		UpstreamOCIRegistry:   cmd.OCIUpstream,
 		OCIPrefix:             cmd.OCIPrefix,
 		OCITagTTL:             cmd.OCITagTTL,
