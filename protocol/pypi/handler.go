@@ -19,10 +19,10 @@ import (
 	"sync"
 	"time"
 
-	contentcache "github.com/wolfeidau/content-cache"
-	"github.com/wolfeidau/content-cache/download"
-	"github.com/wolfeidau/content-cache/store"
-	"github.com/wolfeidau/content-cache/telemetry"
+	contentcache "github.com/buildkite/content-cache"
+	"github.com/buildkite/content-cache/download"
+	"github.com/buildkite/content-cache/store"
+	"github.com/buildkite/content-cache/telemetry"
 )
 
 const (
@@ -632,7 +632,7 @@ func (h *Handler) writeRootHTML(w http.ResponseWriter, projects []string) {
 	var buf bytes.Buffer
 	buf.WriteString("<!DOCTYPE html>\n<html>\n<head><title>Simple Index</title></head>\n<body>\n")
 	for _, p := range projects {
-		buf.WriteString(fmt.Sprintf("<a href=\"/simple/%s/\">%s</a><br/>\n", p, p))
+		fmt.Fprintf(&buf, "<a href=\"/simple/%s/\">%s</a><br/>\n", p, p)
 	}
 	buf.WriteString("</body>\n</html>")
 

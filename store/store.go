@@ -5,7 +5,7 @@ import (
 	"context"
 	"io"
 
-	contentcache "github.com/wolfeidau/content-cache"
+	contentcache "github.com/buildkite/content-cache"
 )
 
 // Store provides content-addressable storage operations.

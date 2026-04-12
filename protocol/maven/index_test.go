@@ -6,9 +6,9 @@ import (
 	"testing"
 	"time"
 
+	contentcache "github.com/buildkite/content-cache"
+	"github.com/buildkite/content-cache/store/metadb"
 	"github.com/stretchr/testify/require"
-	contentcache "github.com/wolfeidau/content-cache"
-	"github.com/wolfeidau/content-cache/store/metadb"
 )
 
 func newTestIndex(t *testing.T) (*Index, *metadb.BoltDB) {

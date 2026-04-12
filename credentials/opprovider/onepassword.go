@@ -7,7 +7,7 @@ import (
 	"os/exec"
 	"strings"
 
-	"github.com/wolfeidau/content-cache/credentials"
+	"github.com/buildkite/content-cache/credentials"
 )
 
 // WithOnePassword registers an "op" template function that resolves secrets

@@ -4,7 +4,7 @@ import (
 	"context"
 	"errors"
 
-	"github.com/wolfeidau/content-cache/store/metadb"
+	"github.com/buildkite/content-cache/store/metadb"
 )
 
 // Index manages the actionID → blob mapping using metadb envelope storage.

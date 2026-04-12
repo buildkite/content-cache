@@ -12,11 +12,11 @@ import (
 	"strings"
 	"time"
 
+	contentcache "github.com/buildkite/content-cache"
+	"github.com/buildkite/content-cache/download"
+	"github.com/buildkite/content-cache/store"
+	"github.com/buildkite/content-cache/telemetry"
 	"github.com/klauspost/compress/gzip"
-	contentcache "github.com/wolfeidau/content-cache"
-	"github.com/wolfeidau/content-cache/download"
-	"github.com/wolfeidau/content-cache/store"
-	"github.com/wolfeidau/content-cache/telemetry"
 )
 
 // Handler implements the Git Smart HTTP proxy as an HTTP handler.

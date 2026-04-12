@@ -4,7 +4,7 @@ package pypi
 import (
 	"time"
 
-	contentcache "github.com/wolfeidau/content-cache"
+	contentcache "github.com/buildkite/content-cache"
 )
 
 // APIMeta contains API version information (PEP 691).

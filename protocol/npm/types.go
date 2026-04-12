@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"time"
 
-	contentcache "github.com/wolfeidau/content-cache"
+	contentcache "github.com/buildkite/content-cache"
 )
 
 // PackageMetadata represents the full metadata for an NPM package.

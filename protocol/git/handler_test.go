@@ -15,12 +15,12 @@ import (
 	"testing"
 	"time"
 
+	contentcache "github.com/buildkite/content-cache"
+	"github.com/buildkite/content-cache/backend"
+	"github.com/buildkite/content-cache/download"
+	"github.com/buildkite/content-cache/store"
+	"github.com/buildkite/content-cache/store/metadb"
 	"github.com/stretchr/testify/require"
-	contentcache "github.com/wolfeidau/content-cache"
-	"github.com/wolfeidau/content-cache/backend"
-	"github.com/wolfeidau/content-cache/download"
-	"github.com/wolfeidau/content-cache/store"
-	"github.com/wolfeidau/content-cache/store/metadb"
 )
 
 const (

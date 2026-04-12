@@ -1,6 +1,6 @@
 syntax = "proto3";
 package metadb.v1;
-option go_package = "github.com/wolfeidau/content-cache/store/metadb";
+option go_package = "github.com/buildkite/content-cache/store/metadb";
 
 // MetadataEnvelope wraps all stored metadata with cache control and integrity fields.
 // Note: The storage key (protocol + kind + key) is NOT stored in the envelope.

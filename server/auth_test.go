@@ -14,10 +14,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/buildkite/content-cache/auth"
+	"github.com/buildkite/content-cache/telemetry"
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/stretchr/testify/require"
-	"github.com/wolfeidau/content-cache/auth"
-	"github.com/wolfeidau/content-cache/telemetry"
 )
 
 func TestAuthMiddleware_NoToken_NoOp(t *testing.T) {

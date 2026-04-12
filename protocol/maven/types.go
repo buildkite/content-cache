@@ -5,7 +5,7 @@ import (
 	"encoding/xml"
 	"time"
 
-	contentcache "github.com/wolfeidau/content-cache"
+	contentcache "github.com/buildkite/content-cache"
 )
 
 // MavenMetadata represents the content of a maven-metadata.xml file.

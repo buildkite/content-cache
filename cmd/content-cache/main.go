@@ -14,12 +14,12 @@ import (
 	"time"
 
 	"github.com/alecthomas/kong"
+	"github.com/buildkite/content-cache/auth"
+	"github.com/buildkite/content-cache/credentials"
+	"github.com/buildkite/content-cache/credentials/opprovider"
+	"github.com/buildkite/content-cache/server"
+	"github.com/buildkite/content-cache/telemetry"
 	"github.com/lmittmann/tint"
-	"github.com/wolfeidau/content-cache/auth"
-	"github.com/wolfeidau/content-cache/credentials"
-	"github.com/wolfeidau/content-cache/credentials/opprovider"
-	"github.com/wolfeidau/content-cache/server"
-	"github.com/wolfeidau/content-cache/telemetry"
 )
 
 var version = "dev"

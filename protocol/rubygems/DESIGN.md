@@ -134,7 +134,7 @@ package rubygems
 
 import (
     "time"
-    contentcache "github.com/wolfeidau/content-cache"
+    contentcache "github.com/buildkite/content-cache"
 )
 
 // DefaultUpstreamURL is the default RubyGems.org URL.

@@ -3,8 +3,8 @@ package opprovider
 import (
 	"testing"
 
+	"github.com/buildkite/content-cache/credentials"
 	"github.com/stretchr/testify/require"
-	"github.com/wolfeidau/content-cache/credentials"
 )
 
 func TestWithOnePassword_RegistersProvider(t *testing.T) {

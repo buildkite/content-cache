@@ -643,7 +643,7 @@ curl http://localhost:8080/rubygems/versions
 curl http://localhost:8080/rubygems/info/rails
 
 # Test the Git proxy endpoint (requires --git-allowed-hosts github.com)
-git clone http://localhost:8080/git/github.com/wolfeidau/content-cache.git /tmp/test-clone
+git clone http://localhost:8080/git/github.com/buildkite/content-cache.git /tmp/test-clone
 
 # Test the OCI registry endpoint (version check)
 curl http://localhost:8080/v2/
@@ -734,4 +734,4 @@ This project was developed with AI, specifically Claude, from [Anthropic](https:
 
 ## License
 
-Apache License, Version 2.0 - Copyright [Mark Wolfe](https://www.wolfe.id.au)
+Apache License, Version 2.0 - Copyright [Mark Wolfe](mailto:mark.wolfe@buildkite.com)

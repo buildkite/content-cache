@@ -10,10 +10,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/buildkite/content-cache/backend"
+	"github.com/buildkite/content-cache/store"
+	"github.com/buildkite/content-cache/store/metadb"
 	"github.com/stretchr/testify/require"
-	"github.com/wolfeidau/content-cache/backend"
-	"github.com/wolfeidau/content-cache/store"
-	"github.com/wolfeidau/content-cache/store/metadb"
 )
 
 // setupMetaDB creates a BoltDB with EnvelopeIndex instances for testing.

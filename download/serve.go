@@ -8,8 +8,8 @@ import (
 	"log/slog"
 	"net/http"
 
-	contentcache "github.com/wolfeidau/content-cache"
-	"github.com/wolfeidau/content-cache/store"
+	contentcache "github.com/buildkite/content-cache"
+	"github.com/buildkite/content-cache/store"
 )
 
 // ServeOptions configures how ServeFromStore writes the HTTP response.

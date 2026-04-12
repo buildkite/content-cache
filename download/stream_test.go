@@ -13,8 +13,8 @@ import (
 	"path/filepath"
 	"testing"
 
+	contentcache "github.com/buildkite/content-cache"
 	"github.com/stretchr/testify/require"
-	contentcache "github.com/wolfeidau/content-cache"
 )
 
 func testLogger() *slog.Logger {

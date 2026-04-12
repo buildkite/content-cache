@@ -10,10 +10,10 @@ import (
 	"testing"
 	"time"
 
+	contentcache "github.com/buildkite/content-cache"
+	"github.com/buildkite/content-cache/backend"
+	"github.com/buildkite/content-cache/store/metadb"
 	"github.com/stretchr/testify/require"
-	contentcache "github.com/wolfeidau/content-cache"
-	"github.com/wolfeidau/content-cache/backend"
-	"github.com/wolfeidau/content-cache/store/metadb"
 )
 
 // testManager creates a Manager with a real bbolt DB, a real BoltDB MetaDB,

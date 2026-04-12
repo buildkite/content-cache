@@ -20,7 +20,7 @@ import (
 )
 
 const (
-	meterName = "github.com/wolfeidau/content-cache"
+	meterName = "github.com/buildkite/content-cache"
 )
 
 // MetricsConfig configures the metrics system.

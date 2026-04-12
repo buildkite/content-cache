@@ -6,9 +6,9 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"github.com/buildkite/content-cache/store/metadb"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"github.com/wolfeidau/content-cache/store/metadb"
 )
 
 func TestSumdbHandler_Supported(t *testing.T) {

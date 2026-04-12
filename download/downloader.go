@@ -6,7 +6,7 @@ package download
 import (
 	"context"
 
-	contentcache "github.com/wolfeidau/content-cache"
+	contentcache "github.com/buildkite/content-cache"
 	"golang.org/x/sync/singleflight"
 )
 

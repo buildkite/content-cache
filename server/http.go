@@ -13,24 +13,24 @@ import (
 	"strings"
 	"time"
 
+	"github.com/buildkite/content-cache/auth"
+	"github.com/buildkite/content-cache/backend"
+	"github.com/buildkite/content-cache/credentials"
+	"github.com/buildkite/content-cache/download"
+	"github.com/buildkite/content-cache/protocol/buildcache"
+	"github.com/buildkite/content-cache/protocol/git"
+	"github.com/buildkite/content-cache/protocol/goproxy"
+	"github.com/buildkite/content-cache/protocol/maven"
+	"github.com/buildkite/content-cache/protocol/npm"
+	"github.com/buildkite/content-cache/protocol/oci"
+	"github.com/buildkite/content-cache/protocol/pypi"
+	"github.com/buildkite/content-cache/protocol/rubygems"
+	"github.com/buildkite/content-cache/store"
+	"github.com/buildkite/content-cache/store/gc"
+	"github.com/buildkite/content-cache/store/metadb"
+	"github.com/buildkite/content-cache/store/s3fifo"
+	"github.com/buildkite/content-cache/telemetry"
 	"github.com/google/uuid"
-	"github.com/wolfeidau/content-cache/auth"
-	"github.com/wolfeidau/content-cache/backend"
-	"github.com/wolfeidau/content-cache/credentials"
-	"github.com/wolfeidau/content-cache/download"
-	"github.com/wolfeidau/content-cache/protocol/buildcache"
-	"github.com/wolfeidau/content-cache/protocol/git"
-	"github.com/wolfeidau/content-cache/protocol/goproxy"
-	"github.com/wolfeidau/content-cache/protocol/maven"
-	"github.com/wolfeidau/content-cache/protocol/npm"
-	"github.com/wolfeidau/content-cache/protocol/oci"
-	"github.com/wolfeidau/content-cache/protocol/pypi"
-	"github.com/wolfeidau/content-cache/protocol/rubygems"
-	"github.com/wolfeidau/content-cache/store"
-	"github.com/wolfeidau/content-cache/store/gc"
-	"github.com/wolfeidau/content-cache/store/metadb"
-	"github.com/wolfeidau/content-cache/store/s3fifo"
-	"github.com/wolfeidau/content-cache/telemetry"
 	"go.opentelemetry.io/otel"
 )
 
@@ -277,7 +277,7 @@ func New(cfg Config) (*Server, error) {
 		if gcStartupDelay == 0 {
 			gcStartupDelay = 5 * time.Minute
 		}
-		gcMetrics, err := gc.NewMetrics(otel.Meter("github.com/wolfeidau/content-cache"))
+		gcMetrics, err := gc.NewMetrics(otel.Meter("github.com/buildkite/content-cache"))
 		if err != nil {
 			return nil, fmt.Errorf("creating gc metrics: %w", err)
 		}

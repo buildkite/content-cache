@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"time"
 
-	contentcache "github.com/wolfeidau/content-cache"
+	contentcache "github.com/buildkite/content-cache"
 )
 
 const (

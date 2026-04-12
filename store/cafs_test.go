@@ -6,9 +6,9 @@ import (
 	"io"
 	"testing"
 
+	contentcache "github.com/buildkite/content-cache"
+	"github.com/buildkite/content-cache/backend"
 	"github.com/stretchr/testify/require"
-	contentcache "github.com/wolfeidau/content-cache"
-	"github.com/wolfeidau/content-cache/backend"
 )
 
 func TestCAFSPutGet(t *testing.T) {

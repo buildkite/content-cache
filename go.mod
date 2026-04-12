@@ -1,4 +1,4 @@
-module github.com/wolfeidau/content-cache
+module github.com/buildkite/content-cache
 
 go 1.25.5
 

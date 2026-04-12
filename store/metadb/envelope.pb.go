@@ -328,7 +328,7 @@ const file_store_metadb_envelope_proto_rawDesc = "" +
 	"\x19CONTENT_TYPE_OCTET_STREAM\x10\x04*K\n" +
 	"\x0fContentEncoding\x12\x1d\n" +
 	"\x19CONTENT_ENCODING_IDENTITY\x10\x00\x12\x19\n" +
-	"\x15CONTENT_ENCODING_ZSTD\x10\x01B1Z/github.com/wolfeidau/content-cache/store/metadbb\x06proto3"
+	"\x15CONTENT_ENCODING_ZSTD\x10\x01B1Z/github.com/buildkite/content-cache/store/metadbb\x06proto3"
 
 var (
 	file_store_metadb_envelope_proto_rawDescOnce sync.Once

@@ -3,8 +3,8 @@ package pypi
 import (
 	"testing"
 
+	contentcache "github.com/buildkite/content-cache"
 	"github.com/stretchr/testify/require"
-	contentcache "github.com/wolfeidau/content-cache"
 )
 
 func TestCollectBlobRefs(t *testing.T) {

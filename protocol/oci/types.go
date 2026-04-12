@@ -5,7 +5,7 @@ package oci
 import (
 	"time"
 
-	contentcache "github.com/wolfeidau/content-cache"
+	contentcache "github.com/buildkite/content-cache"
 )
 
 // Media types for OCI and Docker manifests.

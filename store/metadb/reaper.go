@@ -5,7 +5,7 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/wolfeidau/content-cache/telemetry"
+	"github.com/buildkite/content-cache/telemetry"
 )
 
 // ExpiryReaper runs periodic cleanup of expired metadata.

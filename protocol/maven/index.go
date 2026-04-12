@@ -7,8 +7,8 @@ import (
 	"sync"
 	"time"
 
-	contentcache "github.com/wolfeidau/content-cache"
-	"github.com/wolfeidau/content-cache/store/metadb"
+	contentcache "github.com/buildkite/content-cache"
+	"github.com/buildkite/content-cache/store/metadb"
 )
 
 const (

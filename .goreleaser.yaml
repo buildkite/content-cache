@@ -38,7 +38,7 @@ builds:
 kos:
   - id: content-cache
     repositories:
-      - ghcr.io/wolfeidau/content-cache
+      - ghcr.io/buildkite/content-cache
     build: content-cache
     main: ./cmd/content-cache
     creation_time: "{{.CommitTimestamp}}"
@@ -47,8 +47,8 @@ kos:
       - '{{.Version}}'
       - latest
     labels:
-      org.opencontainers.image.authors: Mark Wolfe https://wolfe.id.au
-      org.opencontainers.image.source: https://github.com/wolfeidau/content-cache
+      org.opencontainers.image.authors: Mark Wolfe mark.wolfe@buildkite.com
+      org.opencontainers.image.source: https://github.com/buildkite/content-cache
       org.opencontainers.image.created: "{{.Date}}"
       org.opencontainers.image.title: "{{.ProjectName}}"
       org.opencontainers.image.revision: "{{.FullCommit}}"
