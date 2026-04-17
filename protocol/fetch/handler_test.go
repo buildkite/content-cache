@@ -6,6 +6,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"path/filepath"
 	"testing"
 	"time"
@@ -15,6 +16,20 @@ import (
 	"github.com/buildkite/content-cache/store/metadb"
 	"github.com/stretchr/testify/require"
 )
+
+type rewriteTransport struct {
+	target *url.URL
+	base   http.RoundTripper
+}
+
+func (t rewriteTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	clone := req.Clone(req.Context())
+	cloneURL := *clone.URL
+	clone.URL = &cloneURL
+	clone.URL.Scheme = t.target.Scheme
+	clone.URL.Host = t.target.Host
+	return t.base.RoundTrip(clone)
+}
 
 func setupMetaDB(t *testing.T, tmpDir string) (*metadb.BoltDB, *Index) {
 	t.Helper()
@@ -344,6 +359,61 @@ func TestHandlerFetchConditionalGetWarmsCacheOnMiss(t *testing.T) {
 	require.Equal(t, http.StatusOK, cachedRes.Code)
 	require.Equal(t, "fresh-body", cachedRes.Body.String())
 	require.Equal(t, `"fresh-etag"`, cachedRes.Header().Get("ETag"))
+	require.Equal(t, 1, requests)
+}
+
+func TestHandlerFetchWildcardIfNoneMatchWithoutETagReturnsNotModified(t *testing.T) {
+	requests := 0
+	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		_, _ = w.Write([]byte("cached-body"))
+	}))
+	defer upstream.Close()
+
+	h := newTestHandler(t, upstream.Client(), WithAllowedHosts([]string{upstream.Listener.Addr().String()}))
+
+	warmReq := httptest.NewRequest(http.MethodGet, "/"+upstream.Listener.Addr().String()+"/tool.tar.gz", nil)
+	warmRes := httptest.NewRecorder()
+	h.ServeHTTP(warmRes, warmReq)
+	require.Equal(t, http.StatusOK, warmRes.Code)
+
+	conditionalReq := httptest.NewRequest(http.MethodGet, "/"+upstream.Listener.Addr().String()+"/tool.tar.gz", nil)
+	conditionalReq.Header.Set("If-None-Match", "*")
+	conditionalRes := httptest.NewRecorder()
+	h.ServeHTTP(conditionalRes, conditionalReq)
+
+	require.Equal(t, http.StatusNotModified, conditionalRes.Code)
+	require.Empty(t, conditionalRes.Body.String())
+	require.Equal(t, 1, requests)
+}
+
+func TestHandlerFetchNormalisesEquivalentHTTPSAuthoritiesToOneCacheKey(t *testing.T) {
+	requests := 0
+	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		_, _ = w.Write([]byte("cached-body"))
+	}))
+	defer upstream.Close()
+
+	target, err := url.Parse(upstream.URL)
+	require.NoError(t, err)
+	client := &http.Client{
+		Transport: rewriteTransport{target: target, base: upstream.Client().Transport},
+		Timeout:   defaultTimeout,
+	}
+	h := newTestHandler(t, client, WithAllowedHosts([]string{"example.com"}))
+
+	firstReq := httptest.NewRequest(http.MethodGet, "/Example.COM:443/tool.tar.gz", nil)
+	firstRes := httptest.NewRecorder()
+	h.ServeHTTP(firstRes, firstReq)
+	require.Equal(t, http.StatusOK, firstRes.Code)
+
+	secondReq := httptest.NewRequest(http.MethodGet, "/example.com/tool.tar.gz", nil)
+	secondRes := httptest.NewRecorder()
+	h.ServeHTTP(secondRes, secondReq)
+
+	require.Equal(t, http.StatusOK, secondRes.Code)
+	require.Equal(t, "cached-body", secondRes.Body.String())
 	require.Equal(t, 1, requests)
 }
 

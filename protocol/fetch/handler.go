@@ -128,7 +128,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	upstream := &url.URL{Scheme: "https", Host: host, Path: upstreamPath, RawQuery: r.URL.RawQuery}
+	upstream := &url.URL{Scheme: "https", Host: canonicalHTTPSAuthority(host), Path: upstreamPath, RawQuery: r.URL.RawQuery}
 	h.serveUpstream(w, r, upstream, h.allowedHosts, "resource")
 }
 
@@ -149,7 +149,7 @@ func (h *Handler) ServeGitHubRelease(w http.ResponseWriter, r *http.Request) {
 	allowed.Add(h.githubReleaseHost)
 	allowed.Merge(h.githubReleaseRedirectHosts)
 
-	upstream := &url.URL{Scheme: "https", Host: h.githubReleaseHost, Path: upstreamPath, RawQuery: r.URL.RawQuery}
+	upstream := &url.URL{Scheme: "https", Host: canonicalHTTPSAuthority(h.githubReleaseHost), Path: upstreamPath, RawQuery: r.URL.RawQuery}
 	h.serveUpstream(w, r, upstream, allowed, "github_release")
 }
 
@@ -532,16 +532,13 @@ func isNotModified(r *http.Request, entry *CachedResource) bool {
 }
 
 func matchesIfNoneMatch(header, etag string) bool {
-	if etag == "" {
-		return false
-	}
 	want := weakETag(etag)
 	for _, candidate := range strings.Split(header, ",") {
 		candidate = strings.TrimSpace(candidate)
 		if candidate == "*" {
 			return true
 		}
-		if weakETag(candidate) == want {
+		if etag != "" && weakETag(candidate) == want {
 			return true
 		}
 	}
@@ -643,4 +640,15 @@ func normalizeHost(host string) (hostname string, authority string, port string)
 	}
 	hostname = strings.ToLower(host)
 	return hostname, hostname, ""
+}
+
+func canonicalHTTPSAuthority(host string) string {
+	hostname, authority, port := normalizeHost(host)
+	if hostname == "" {
+		return host
+	}
+	if port == "" || port == "443" {
+		return hostname
+	}
+	return authority
 }
