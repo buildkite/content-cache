@@ -417,6 +417,36 @@ func TestHandlerFetchNormalisesEquivalentHTTPSAuthoritiesToOneCacheKey(t *testin
 	require.Equal(t, 1, requests)
 }
 
+func TestHandlerFetchRejectsHTTPRedirects(t *testing.T) {
+	redirectTarget := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("insecure-body"))
+	}))
+	defer redirectTarget.Close()
+
+	targetURL, err := url.Parse(redirectTarget.URL)
+	require.NoError(t, err)
+
+	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, redirectTarget.URL+"/tool.tar.gz", http.StatusFound)
+	}))
+	defer upstream.Close()
+
+	pool := x509.NewCertPool()
+	pool.AddCert(upstream.Certificate())
+	client := &http.Client{
+		Transport: &http.Transport{TLSClientConfig: &tls.Config{RootCAs: pool}},
+		Timeout:   defaultTimeout,
+	}
+	h := newTestHandler(t, client, WithAllowedHosts([]string{upstream.Listener.Addr().String(), targetURL.Host}))
+
+	req := httptest.NewRequest(http.MethodGet, "/"+upstream.Listener.Addr().String()+"/tool.tar.gz", nil)
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+
+	require.Equal(t, http.StatusForbidden, w.Code)
+	require.Contains(t, w.Body.String(), "host not allowed")
+}
+
 func TestHandlerFetchRejectsRangeRequests(t *testing.T) {
 	requests := 0
 	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

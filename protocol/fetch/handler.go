@@ -401,6 +401,9 @@ func (h *Handler) clientWithRedirectPolicy(allowedHosts hostSet) *http.Client {
 		if len(via) >= 10 {
 			return fmt.Errorf("stopped after 10 redirects")
 		}
+		if req.URL.Scheme != "https" {
+			return fmt.Errorf("%w: %s", errHostNotAllowed, req.URL.String())
+		}
 		if !allowedHosts.Contains(req.URL.Host) {
 			return fmt.Errorf("%w: %s", errHostNotAllowed, req.URL.Host)
 		}
