@@ -113,6 +113,8 @@ func protocolFromPath(path string) string {
 		return "rubygems"
 	case strings.HasPrefix(path, "/git/"):
 		return "git"
+	case strings.HasPrefix(path, "/fetch/"), strings.HasPrefix(path, "/github-release/"):
+		return "fetch"
 	case strings.HasPrefix(path, "/goproxy/sumdb/"), strings.HasPrefix(path, "/sumdb/"):
 		return "sumdb"
 	case strings.HasPrefix(path, "/goproxy/"):

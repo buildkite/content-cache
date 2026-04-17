@@ -1,6 +1,6 @@
 # content-cache
 
-A content-addressable caching proxy for Go modules, NPM packages, PyPI packages, Maven artifacts, RubyGems, OCI registries, and Git repositories. Reduces build times and network bandwidth by caching package downloads locally with automatic deduplication and expiration policies.
+A content-addressable caching proxy for Go modules, NPM packages, PyPI packages, Maven artifacts, RubyGems, OCI registries, Git repositories, and direct download artefacts. Reduces build times and network bandwidth by caching package downloads locally with automatic deduplication and expiration policies.
 
 ## Problem
 
@@ -131,6 +131,18 @@ git clone https://github.com/user/repo.git  # routed through proxy automatically
 # To undo
 git config --global --unset url."http://localhost:8080/git/github.com/".insteadOf
 
+# Cache mise aqua downloads from GitHub Releases plus other direct HTTPS assets
+./content-cache serve --listen :8080 --storage ./cache \
+  --fetch-allowed-hosts raw.githubusercontent.com,releases.hashicorp.com,nodejs.org,dl.google.com
+
+# mise can rewrite release downloads to the cache server
+cat >> ~/.config/mise/config.toml <<'EOF'
+[settings.url_replacements]
+"regex:^https://github\\.com/(.+/releases/download/.+)" = "http://localhost:8080/github-release/$1"
+"regex:^https://raw\\.githubusercontent\\.com/(.+)" = "http://localhost:8080/fetch/raw.githubusercontent.com/$1"
+"regex:^https://releases\\.hashicorp\\.com/(.+)" = "http://localhost:8080/fetch/releases.hashicorp.com/$1"
+EOF
+
 # Use as a shared Go build cache (GOCACHEPROG)
 # The cacheprog subcommand implements the GOCACHEPROG protocol, backed by the server's /buildcache/ endpoint.
 # Artifacts are stored on the server and a local copy is kept for DiskPath responses.
@@ -158,6 +170,7 @@ go build ./...  # Subsequent builds on any machine: artifacts served from server
 - **RubyGems Registry**: Full support for Compact Index and legacy specs API with gem caching and SHA256 verification
 - **OCI Distribution v2**: Read-through cache for container registries with tag-to-digest resolution
 - **Git Smart HTTP Proxy**: Caching proxy for `git clone`/`fetch` over HTTPS with pack-level caching, host allowlist, and singleflight deduplication
+- **Direct HTTPS Fetch Cache**: Read-through cache for immutable release artefacts and mirrored downloads via `/github-release/*` and `/fetch/{host}/...`
 - **Content-Addressable Storage**: BLAKE3 hashing with automatic deduplication
 - **Filesystem Backend**: Atomic writes with sharded directory structure
 - **Download Deduplication**: Singleflight-based coalescing of concurrent requests for the same uncached resource
@@ -330,7 +343,7 @@ OIDC authentication allows CI/CD pipelines to use short-lived identity tokens ra
 | `issuer` | OIDC issuer URL — must match the `iss` claim exactly |
 | `audience` | Allowed audience values — must match the `aud` claim. Omitting this field skips audience validation (not recommended) |
 | `required_claims` | Map of claim name → expected value. Supports `*` wildcard suffix (e.g. `"refs/heads/*"`) and lists |
-| `permissions` | Protocol names this policy grants: `goproxy`, `npm`, `oci`, `pypi`, `maven`, `rubygems`, `git`, `sumdb`, `buildcache`, `admin`. Use `"*"` to grant all. |
+| `permissions` | Protocol names this policy grants: `goproxy`, `npm`, `oci`, `pypi`, `maven`, `rubygems`, `git`, `fetch`, `sumdb`, `buildcache`, `admin`. Use `"*"` to grant all. |
 
 **Using OIDC tokens in CI/CD:**
 
@@ -356,6 +369,12 @@ GitHub Actions — the `id-token: write` permission exposes `ACTIONS_ID_TOKEN_RE
 | `--maven-upstream` | `MAVEN_UPSTREAM` | `repo.maven.apache.org/maven2` | Upstream Maven repository URL |
 | `--rubygems-upstream` | `RUBYGEMS_UPSTREAM` | `rubygems.org` | Upstream RubyGems registry URL |
 
+### Fetch Cache Options
+
+| Flag | Environment Variable | Default | Description |
+|------|---------------------|---------|-------------|
+| `--fetch-allowed-hosts` | `FETCH_ALLOWED_HOSTS` | | Comma-separated list of allowed upstream hosts for `/fetch/{host}/...` |
+
 ### OCI Options
 
 | Flag | Environment Variable | Default | Description |
@@ -372,6 +391,7 @@ OCI registry credentials (username/password) are configured via the credentials 
 | `--pypi-metadata-ttl` | `PYPI_METADATA_TTL` | `5m` | TTL for PyPI project metadata cache |
 | `--maven-metadata-ttl` | `MAVEN_METADATA_TTL` | `5m` | TTL for maven-metadata.xml cache |
 | `--rubygems-metadata-ttl` | `RUBYGEMS_METADATA_TTL` | `5m` | TTL for RubyGems metadata cache |
+| `--fetch-metadata-ttl` | `FETCH_METADATA_TTL` | `24h` | TTL for direct download cache metadata under `/fetch` and `/github-release` |
 
 ### Git Proxy Options
 

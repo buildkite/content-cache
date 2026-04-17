@@ -52,11 +52,14 @@ type ServeCmd struct {
 	GitAllowedHosts       []string `kong:"name='git-allowed-hosts',env='GIT_ALLOWED_HOSTS',help='Comma-separated list of allowed Git upstream hosts (e.g. github.com,gitlab.com)',group='Git'"`
 	GitMaxRequestBodySize int64    `kong:"name='git-max-request-body',default='104857600',env='GIT_MAX_REQUEST_BODY',help='Maximum git-upload-pack request body size in bytes (default: 100MB)',group='Git'"`
 
+	FetchAllowedHosts []string `kong:"name='fetch-allowed-hosts',env='FETCH_ALLOWED_HOSTS',help='Comma-separated list of allowed upstream hosts for the generic /fetch cache (e.g. raw.githubusercontent.com,releases.hashicorp.com)',group='Fetch'"`
+
 	OCIPrefix string        `kong:"name='oci-prefix',default='docker-hub',env='OCI_PREFIX',help='Routing prefix for the OCI registry',group='OCI'"`
 	OCITagTTL time.Duration `kong:"name='oci-tag-ttl',default='5m',env='OCI_TAG_TTL',help='TTL for OCI tag->digest cache mappings',group='OCI'"`
 
 	GoProxyMetadataTTL  time.Duration `kong:"name='goproxy-metadata-ttl',default='24h',env='GOPROXY_METADATA_TTL',help='TTL for Go module list cache (immutable mod/info/zip use blob retention)',group='TTL'"`
 	NPMMetadataTTL      time.Duration `kong:"name='npm-metadata-ttl',default='24h',env='NPM_METADATA_TTL',help='TTL for NPM package metadata cache',group='TTL'"`
+	FetchMetadataTTL    time.Duration `kong:"name='fetch-metadata-ttl',default='24h',env='FETCH_METADATA_TTL',help='TTL for direct download cache metadata under /fetch and /github-release',group='TTL'"`
 	PyPIMetadataTTL     time.Duration `kong:"name='pypi-metadata-ttl',default='5m',env='PYPI_METADATA_TTL',help='TTL for PyPI project metadata cache',group='TTL'"`
 	MavenMetadataTTL    time.Duration `kong:"name='maven-metadata-ttl',default='5m',env='MAVEN_METADATA_TTL',help='TTL for maven-metadata.xml cache',group='TTL'"`
 	RubyGemsMetadataTTL time.Duration `kong:"name='rubygems-metadata-ttl',default='5m',env='RUBYGEMS_METADATA_TTL',help='TTL for RubyGems metadata cache',group='TTL'"`
@@ -90,7 +93,7 @@ func run() error {
 	var cli CLI
 	ctx := kong.Parse(&cli,
 		kong.Name("content-cache"),
-		kong.Description("A content-addressable cache server for Go modules, NPM packages, OCI images, PyPI, Maven, RubyGems, and Git repositories."),
+		kong.Description("A content-addressable cache server for Go modules, NPM packages, OCI images, PyPI, Maven, RubyGems, Git repositories, and direct download artefacts."),
 		kong.Vars{"version": version},
 		kong.UsageOnError(),
 	)
@@ -237,6 +240,8 @@ func (cmd *ServeCmd) Run() error {
 		UpstreamRubyGems:      cmd.RubyGemsUpstream,
 		RubyGemsMetadataTTL:   cmd.RubyGemsMetadataTTL,
 		GitAllowedHosts:       cmd.GitAllowedHosts,
+		FetchAllowedHosts:     cmd.FetchAllowedHosts,
+		FetchMetadataTTL:      cmd.FetchMetadataTTL,
 		GitMaxRequestBodySize: cmd.GitMaxRequestBodySize,
 		BlobRetention:         cmd.BlobRetention,
 		CacheMaxSize:          cmd.CacheMaxSize,

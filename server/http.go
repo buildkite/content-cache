@@ -18,6 +18,7 @@ import (
 	"github.com/buildkite/content-cache/credentials"
 	"github.com/buildkite/content-cache/download"
 	"github.com/buildkite/content-cache/protocol/buildcache"
+	"github.com/buildkite/content-cache/protocol/fetch"
 	"github.com/buildkite/content-cache/protocol/git"
 	"github.com/buildkite/content-cache/protocol/goproxy"
 	"github.com/buildkite/content-cache/protocol/maven"
@@ -106,6 +107,13 @@ type Config struct {
 	// GitAllowedHosts is the allowlist of permitted upstream Git hosts.
 	GitAllowedHosts []string
 
+	// FetchAllowedHosts is the allowlist of permitted upstream hosts for /fetch.
+	FetchAllowedHosts []string
+
+	// FetchMetadataTTL is how long to retain cached fetch metadata.
+	// Default: 24h
+	FetchMetadataTTL time.Duration
+
 	// GitMaxRequestBodySize is the maximum upload-pack request body size in bytes.
 	// Default: 100MB
 	GitMaxRequestBodySize int64
@@ -180,6 +188,8 @@ type Server struct {
 	rubygems        *rubygems.Handler
 	gitIndex        *git.Index
 	git             *git.Handler
+	fetchIndex      *fetch.Index
+	fetch           *fetch.Handler
 	sumdbIndex      *goproxy.SumdbIndex
 	sumdb           *goproxy.SumdbHandler
 	buildcacheIndex *buildcache.Index
@@ -332,6 +342,10 @@ func New(cfg Config) (*Server, error) {
 	gitHTTPClient := &http.Client{
 		Timeout:   10 * time.Minute,
 		Transport: telemetry.NewInstrumentedTransport(nil, "git"),
+	}
+	fetchHTTPClient := &http.Client{
+		Timeout:   10 * time.Minute,
+		Transport: telemetry.NewInstrumentedTransport(nil, "fetch"),
 	}
 
 	// Initialize goproxy components using metadb EnvelopeIndex
@@ -619,6 +633,28 @@ func New(cfg Config) (*Server, error) {
 	}
 	gitHandler := git.NewHandler(gitIndex, cafsStore, gitHandlerOpts...)
 
+	// Initialize generic fetch cache components using metadb EnvelopeIndex
+	fetchTTL := cfg.FetchMetadataTTL
+	if fetchTTL == 0 {
+		fetchTTL = 24 * time.Hour
+	}
+	fetchResourceIndex, err := metadb.NewEnvelopeIndex(metaDB, "fetch", "resource", fetchTTL, withCodec)
+	if err != nil {
+		return nil, fmt.Errorf("creating fetch resource index: %w", err)
+	}
+	fetchIndex := fetch.NewIndex(fetchResourceIndex)
+	fetchHandler := fetch.NewHandler(
+		fetchIndex,
+		cafsStore,
+		fetch.WithHTTPClient(fetchHTTPClient),
+		fetch.WithLogger(cfg.Logger.With("component", "fetch")),
+		fetch.WithDownloader(dl),
+		fetch.WithAllowedHosts(cfg.FetchAllowedHosts),
+	)
+	if len(cfg.FetchAllowedHosts) == 0 {
+		cfg.Logger.Info("generic fetch cache has no allowed hosts configured, /fetch requests will be rejected; /github-release remains enabled")
+	}
+
 	// Initialize sumdb components using metadb EnvelopeIndex
 	// Sumdb responses are immutable, so we use a long TTL (or no TTL)
 	sumdbEnvelope, err := metadb.NewEnvelopeIndex(metaDB, "sumdb", "cache", 0, withCodec)
@@ -679,6 +715,8 @@ func New(cfg Config) (*Server, error) {
 		rubygems:        rubygemsHandler,
 		gitIndex:        gitIndex,
 		git:             gitHandler,
+		fetchIndex:      fetchIndex,
+		fetch:           fetchHandler,
 		sumdbIndex:      sumdbIndex,
 		sumdb:           sumdbHandler,
 		buildcacheIndex: buildcacheIdx,
@@ -765,6 +803,14 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	gitHandler := withProtocol("git", http.StripPrefix("/git", s.git))
 	mux.Handle("GET /git/", gitHandler)
 	mux.Handle("POST /git/", gitHandler)
+
+	// Direct download cache endpoints for immutable artefacts.
+	githubReleaseHandler := withProtocol("fetch", http.StripPrefix("/github-release", http.HandlerFunc(s.fetch.ServeGitHubRelease)))
+	mux.Handle("GET /github-release/", githubReleaseHandler)
+	mux.Handle("HEAD /github-release/", githubReleaseHandler)
+	fetchHandler := withProtocol("fetch", http.StripPrefix("/fetch", s.fetch))
+	mux.Handle("GET /fetch/", fetchHandler)
+	mux.Handle("HEAD /fetch/", fetchHandler)
 
 	// Sumdb proxy endpoints
 	// Handle both root and prefixed paths for sumdb
@@ -1017,6 +1063,8 @@ func deriveProtocol(p string) string {
 		return "rubygems"
 	case strings.HasPrefix(p, "/git/"):
 		return "git"
+	case strings.HasPrefix(p, "/fetch/"), strings.HasPrefix(p, "/github-release/"):
+		return "fetch"
 	case strings.HasPrefix(p, "/sumdb/"):
 		return "sumdb"
 	case strings.HasPrefix(p, "/goproxy/"):

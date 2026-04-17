@@ -7,7 +7,7 @@
       "required_claims": {
         "organization_slug": "myorg"
       },
-      "permissions": ["goproxy", "buildcache", "npm"]
+      "permissions": ["goproxy", "buildcache", "npm", "fetch"]
     },
     {
       "name": "buildkite-myorg-deploy-pipeline",
@@ -17,7 +17,7 @@
         "organization_slug": "myorg",
         "pipeline_slug": "deploy"
       },
-      "permissions": ["goproxy", "buildcache", "npm", "oci"]
+      "permissions": ["goproxy", "buildcache", "npm", "oci", "fetch"]
     },
     {
       "name": "github-actions-myorg",
@@ -27,7 +27,7 @@
         "repository_owner": "myorg",
         "ref": "refs/heads/*"
       },
-      "permissions": ["goproxy", "npm"]
+      "permissions": ["goproxy", "npm", "fetch"]
     },
     {
       "name": "github-actions-myorg-full",

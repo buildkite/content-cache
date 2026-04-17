@@ -140,6 +140,8 @@ func TestProtocolFromPath(t *testing.T) {
 		{"/maven/org/example/artifact/1.0/artifact-1.0.jar", "maven"},
 		{"/rubygems/gems/rails-7.0.0.gem", "rubygems"},
 		{"/git/github.com/org/repo.git/info/refs", "git"},
+		{"/fetch/raw.githubusercontent.com/owner/repo/file.txt", "fetch"},
+		{"/github-release/owner/repo/releases/download/v1.0.0/tool.tar.gz", "fetch"},
 		{"/sumdb/sum.golang.org/lookup/github.com/foo/bar@v1.0.0", "sumdb"},
 		{"/goproxy/sumdb/sum.golang.org/lookup/github.com/foo/bar@v1.0.0", "sumdb"},
 		{"/goproxy/github.com/foo/bar/@v/list", "goproxy"},
@@ -166,7 +168,7 @@ func TestAuthMiddleware_ProtectedPaths(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	}))
 
-	for _, path := range []string{"/stats", "/admin/gc", "/admin/gc/status", "/npm/react", "/v2/", "/git/github.com/org/repo.git/info/refs"} {
+	for _, path := range []string{"/stats", "/admin/gc", "/admin/gc/status", "/npm/react", "/v2/", "/git/github.com/org/repo.git/info/refs", "/fetch/raw.githubusercontent.com/owner/repo/file.txt", "/github-release/owner/repo/releases/download/v1.0.0/tool.tar.gz"} {
 		t.Run(path, func(t *testing.T) {
 			req := httptest.NewRequest(http.MethodGet, path, nil)
 			rec := httptest.NewRecorder()
