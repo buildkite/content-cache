@@ -3,20 +3,23 @@
 ## Quick Commands
 
 ```bash
+# Install the pinned toolchain
+mise install
+
 # Build
-go build -o content-cache ./cmd/content-cache
+mise run build
 
 # Run tests
-go test ./...
+mise run test
 
 # Run tests with coverage
-go test -coverprofile coverage.out -coverpkg=./... ./...
+mise run coverage
 
 # Lint (matches CI)
-golangci-lint run --verbose --timeout 3m
+mise run lint
 
 # Format code (auto-fix imports and formatting)
-golangci-lint run --fix
+mise run fix
 
 # Run server locally
 ./content-cache -address :8080 -storage ./cache -log-level debug
@@ -102,8 +105,8 @@ Types: `feat`, `fix`, `chore`, `docs`, `refactor`, `test`
 Pipeline runs on every push:
 1. **base_image** - Rebuilds Docker image when `.buildkite/Dockerfile.build` changes (main only)
 2. **QA group** - Runs in parallel:
-   - `golangci-lint run --verbose --timeout 3m`
-   - `go test -coverprofile coverage.out -coverpkg=./... ./...`
+   - `golangci-lint run --verbose --timeout 3m` via the repo `mise.toml`
+   - `go test -coverprofile coverage.out -coverpkg=./... ./...` via the repo `mise.toml`
 
 The base image is cached at `${BUILDKITE_HOSTED_REGISTRY_URL}/content_cache_base:latest`.
 

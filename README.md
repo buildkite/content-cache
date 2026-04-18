@@ -640,8 +640,14 @@ All sections are optional — omit any protocol section to use the default upstr
 ## Development
 
 ```bash
+# Install the pinned toolchain
+mise install
+
 # Run tests
-go test ./...
+mise run test
+
+# Run lint (matches CI)
+mise run lint
 
 # Run with debug logging
 ./content-cache serve --log-level debug

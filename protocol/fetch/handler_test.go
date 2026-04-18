@@ -126,8 +126,11 @@ func TestHandlerGitHubReleaseCachesRedirectedAsset(t *testing.T) {
 	pool.AddCert(assetServer.Certificate())
 	pool.AddCert(githubServer.Certificate())
 	client := &http.Client{
-		Transport: &http.Transport{TLSClientConfig: &tls.Config{RootCAs: pool}},
-		Timeout:   defaultTimeout,
+		Transport: &http.Transport{TLSClientConfig: &tls.Config{
+			MinVersion: tls.VersionTLS12,
+			RootCAs:    pool,
+		}},
+		Timeout: defaultTimeout,
 	}
 
 	h := newTestHandler(
@@ -311,7 +314,9 @@ func TestHandlerFetchConditionalGetForwardsValidatorsOnMiss(t *testing.T) {
 	requests := 0
 	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		requests++
-		require.Equal(t, `"miss-etag"`, r.Header.Get("If-None-Match"))
+		if got := r.Header.Get("If-None-Match"); got != `"miss-etag"` {
+			t.Errorf("If-None-Match = %q, want %q", got, `"miss-etag"`)
+		}
 		w.Header().Set("ETag", `"miss-etag"`)
 		w.WriteHeader(http.StatusNotModified)
 	}))
@@ -334,7 +339,9 @@ func TestHandlerFetchConditionalGetWarmsCacheOnMiss(t *testing.T) {
 	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		requests++
 		if requests == 1 {
-			require.Equal(t, `"stale-etag"`, r.Header.Get("If-None-Match"))
+			if got := r.Header.Get("If-None-Match"); got != `"stale-etag"` {
+				t.Errorf("If-None-Match = %q, want %q", got, `"stale-etag"`)
+			}
 		}
 		w.Header().Set("ETag", `"fresh-etag"`)
 		_, _ = w.Write([]byte("fresh-body"))
@@ -434,8 +441,11 @@ func TestHandlerFetchRejectsHTTPRedirects(t *testing.T) {
 	pool := x509.NewCertPool()
 	pool.AddCert(upstream.Certificate())
 	client := &http.Client{
-		Transport: &http.Transport{TLSClientConfig: &tls.Config{RootCAs: pool}},
-		Timeout:   defaultTimeout,
+		Transport: &http.Transport{TLSClientConfig: &tls.Config{
+			MinVersion: tls.VersionTLS12,
+			RootCAs:    pool,
+		}},
+		Timeout: defaultTimeout,
 	}
 	h := newTestHandler(t, client, WithAllowedHosts([]string{upstream.Listener.Addr().String(), targetURL.Host}))
 

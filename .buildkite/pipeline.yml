@@ -1,4 +1,4 @@
-image: "${BUILDKITE_HOSTED_REGISTRY_URL}/content_cache_base:latest"
+image: "buildkite/hosted-agent-base-images:ubuntu-jammy"
 
 steps:
   - if: build.branch == "main"
@@ -28,10 +28,11 @@ steps:
 
   - group: ":mag: QA"
     key: quality_checks
-    depends_on: [base_image]
     steps:
       - label: ":golangci-lint: lint"
         command: golangci-lint run --verbose --timeout 3m
+        plugins:
+          - mise#v1.1.1: ~
 
       - label: ":go: test"
         artifact_paths:
@@ -39,5 +40,7 @@ steps:
           - coverage.out
         commands:
           - go test -coverprofile coverage.out -coverpkg=./... ./...
-          - go run github.com/nikolaydubina/go-cover-treemap -coverprofile coverage.out > cover-tree.svg
+          - go-cover-treemap -coverprofile coverage.out > cover-tree.svg
           - echo '<details><summary>Coverage tree map</summary><img src="artifact://cover-tree.svg" alt="Test coverage tree map" width="70%"></details>' | buildkite-agent annotate --style "info"
+        plugins:
+          - mise#v1.1.1: ~
