@@ -104,6 +104,7 @@ func (idx *Index) PutVersions(ctx context.Context, meta *CachedVersions, content
 	storedMeta := *meta
 	storedMeta.ContentHash = hash
 	storedMeta.Size = int64(len(content))
+	storedMeta.CachedAt = persistedCachedAt(storedMeta.CachedAt, storedMeta.UpdatedAt)
 
 	return idx.versionsIndex.PutJSONWithOptions(
 		ctx,
@@ -195,6 +196,7 @@ func (idx *Index) PutInfo(ctx context.Context, gem string, meta *CachedGemInfo, 
 	storedMeta.Name = gem
 	storedMeta.ContentHash = hash
 	storedMeta.Size = int64(len(content))
+	storedMeta.CachedAt = persistedCachedAt(storedMeta.CachedAt, storedMeta.UpdatedAt)
 
 	return idx.infoIndex.PutJSONWithOptions(
 		ctx,
@@ -309,6 +311,13 @@ func (idx *Index) PutGemspec(ctx context.Context, spec *CachedGemspec) error {
 // IsExpired checks if the cached content is expired based on TTL.
 func (idx *Index) IsExpired(cachedAt time.Time, ttl time.Duration) bool {
 	return idx.now().Sub(cachedAt) > ttl
+}
+
+func persistedCachedAt(cachedAt, updatedAt time.Time) time.Time {
+	if updatedAt.After(cachedAt) {
+		return updatedAt
+	}
+	return cachedAt
 }
 
 // gemspecFilename builds the filename for a gemspec.

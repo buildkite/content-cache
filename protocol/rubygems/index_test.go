@@ -124,6 +124,29 @@ func TestIndexVersionsLargeContent(t *testing.T) {
 	require.Len(t, env.BlobRefs, 1)
 }
 
+func TestIndexVersionsRefreshesCachedAtFromUpdatedAt(t *testing.T) {
+	idx, _ := newTestIndex(t)
+	ctx := context.Background()
+
+	staleAt := time.Now().Add(-10 * time.Minute).Round(0)
+	refreshedAt := time.Now().Round(0)
+	meta := &CachedVersions{
+		ETag:       `"refreshed"`,
+		ReprDigest: "sha256digest",
+		CachedAt:   staleAt,
+		UpdatedAt:  refreshedAt,
+	}
+	content := []byte("---\nrails 7.0.0 abc123\n")
+
+	require.NoError(t, idx.PutVersions(ctx, meta, content))
+
+	gotMeta, _, err := idx.GetVersions(ctx)
+	require.NoError(t, err)
+	require.WithinDuration(t, refreshedAt, gotMeta.CachedAt, time.Millisecond)
+	require.WithinDuration(t, refreshedAt, gotMeta.UpdatedAt, time.Millisecond)
+	require.False(t, idx.IsExpired(gotMeta.CachedAt, time.Minute))
+}
+
 func TestIndexVersionsLegacyEnvelopeFallback(t *testing.T) {
 	idx, _ := newTestIndex(t)
 	ctx := context.Background()
@@ -216,6 +239,34 @@ func TestIndexInfoLargeChecksums(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, metadb.ContentType_CONTENT_TYPE_JSON, env.ContentType)
 	require.Len(t, env.BlobRefs, 1)
+}
+
+func TestIndexInfoRefreshesCachedAtFromUpdatedAt(t *testing.T) {
+	idx, _ := newTestIndex(t)
+	ctx := context.Background()
+	gem := "rails"
+
+	staleAt := time.Now().Add(-10 * time.Minute).Round(0)
+	refreshedAt := time.Now().Round(0)
+	meta := &CachedGemInfo{
+		Name:       gem,
+		ETag:       `"rails-etag"`,
+		ReprDigest: "sha256",
+		Checksums: map[string]string{
+			"7.0.0": "abc123",
+		},
+		CachedAt:  staleAt,
+		UpdatedAt: refreshedAt,
+	}
+	content := []byte("---\n7.0.0 |checksum:abc123\n")
+
+	require.NoError(t, idx.PutInfo(ctx, gem, meta, content))
+
+	gotMeta, _, err := idx.GetInfo(ctx, gem)
+	require.NoError(t, err)
+	require.WithinDuration(t, refreshedAt, gotMeta.CachedAt, time.Millisecond)
+	require.WithinDuration(t, refreshedAt, gotMeta.UpdatedAt, time.Millisecond)
+	require.False(t, idx.IsExpired(gotMeta.CachedAt, time.Minute))
 }
 
 func TestIndexInfoLegacyEnvelopeFallback(t *testing.T) {
