@@ -1,12 +1,16 @@
 package rubygems
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
+	"io"
 	"sync"
 	"time"
 
 	contentcache "github.com/buildkite/content-cache"
+	"github.com/buildkite/content-cache/store"
 	"github.com/buildkite/content-cache/store/metadb"
 )
 
@@ -17,6 +21,7 @@ type Index struct {
 	specsIndex    *metadb.EnvelopeIndex // protocol="rubygems", kind="specs"
 	gemIndex      *metadb.EnvelopeIndex // protocol="rubygems", kind="gem"
 	gemspecIndex  *metadb.EnvelopeIndex // protocol="rubygems", kind="gemspec"
+	store         store.Store
 	mu            sync.RWMutex
 	now           func() time.Time
 }
@@ -28,6 +33,7 @@ func NewIndex(
 	specsIndex,
 	gemIndex,
 	gemspecIndex *metadb.EnvelopeIndex,
+	st store.Store,
 ) *Index {
 	return &Index{
 		versionsIndex: versionsIndex,
@@ -35,6 +41,7 @@ func NewIndex(
 		specsIndex:    specsIndex,
 		gemIndex:      gemIndex,
 		gemspecIndex:  gemspecIndex,
+		store:         st,
 		now:           time.Now,
 	}
 }
@@ -61,6 +68,18 @@ func (idx *Index) GetVersions(ctx context.Context) (*CachedVersions, []byte, err
 		return nil, nil, err
 	}
 
+	if env.ContentType == metadb.ContentType_CONTENT_TYPE_JSON {
+		var meta CachedVersions
+		if err := json.Unmarshal(content, &meta); err != nil {
+			return nil, nil, err
+		}
+		blobContent, err := idx.readContent(ctx, meta.ContentHash)
+		if err != nil {
+			return nil, nil, err
+		}
+		return &meta, blobContent, nil
+	}
+
 	meta := &CachedVersions{
 		ETag:       env.Etag,
 		ReprDigest: extractReprDigest(env),
@@ -77,11 +96,22 @@ func (idx *Index) PutVersions(ctx context.Context, meta *CachedVersions, content
 	idx.mu.Lock()
 	defer idx.mu.Unlock()
 
-	opts := metadb.PutOptions{
-		Etag: meta.ETag,
+	hash, err := idx.putContent(ctx, content)
+	if err != nil {
+		return err
 	}
-	// Store ReprDigest in attributes if present
-	return idx.versionsIndex.PutWithOptions(ctx, versionsKey, content, metadb.ContentType_CONTENT_TYPE_TEXT, nil, opts)
+
+	storedMeta := *meta
+	storedMeta.ContentHash = hash
+	storedMeta.Size = int64(len(content))
+
+	return idx.versionsIndex.PutJSONWithOptions(
+		ctx,
+		versionsKey,
+		&storedMeta,
+		blobRefs(hash),
+		metadb.PutOptions{Etag: storedMeta.ETag},
+	)
 }
 
 // AppendVersions appends content to the /versions file and updates metadata.
@@ -114,6 +144,18 @@ func (idx *Index) GetInfo(ctx context.Context, gem string) (*CachedGemInfo, []by
 		return nil, nil, err
 	}
 
+	if env.ContentType == metadb.ContentType_CONTENT_TYPE_JSON {
+		var meta CachedGemInfo
+		if err := json.Unmarshal(content, &meta); err != nil {
+			return nil, nil, err
+		}
+		blobContent, err := idx.readContent(ctx, meta.ContentHash)
+		if err != nil {
+			return nil, nil, err
+		}
+		return &meta, blobContent, nil
+	}
+
 	meta := &CachedGemInfo{
 		Name:       gem,
 		ETag:       env.Etag,
@@ -126,6 +168,9 @@ func (idx *Index) GetInfo(ctx context.Context, gem string) (*CachedGemInfo, []by
 	// Checksums are stored as JSON in attributes if present
 	if checksumData, ok := env.Attributes["checksums"]; ok {
 		meta.Checksums = decodeChecksums(checksumData)
+	}
+	if len(meta.Checksums) == 0 {
+		meta.Checksums = ParseInfoChecksums(content)
 	}
 
 	// MD5 from versions file
@@ -141,32 +186,23 @@ func (idx *Index) PutInfo(ctx context.Context, gem string, meta *CachedGemInfo, 
 	idx.mu.Lock()
 	defer idx.mu.Unlock()
 
-	opts := metadb.PutOptions{
-		Etag: meta.ETag,
-	}
-
-	// First store the content
-	if err := idx.infoIndex.PutWithOptions(ctx, gem, content, metadb.ContentType_CONTENT_TYPE_TEXT, nil, opts); err != nil {
+	hash, err := idx.putContent(ctx, content)
+	if err != nil {
 		return err
 	}
 
-	// If we have checksums, update the envelope with attributes
-	if len(meta.Checksums) > 0 || meta.MD5 != "" {
-		return idx.infoIndex.Update(ctx, gem, func(data []byte, env *metadb.MetadataEnvelope) ([]byte, []string, error) {
-			if env.Attributes == nil {
-				env.Attributes = make(map[string][]byte)
-			}
-			if len(meta.Checksums) > 0 {
-				env.Attributes["checksums"] = encodeChecksums(meta.Checksums)
-			}
-			if meta.MD5 != "" {
-				env.Attributes["md5"] = []byte(meta.MD5)
-			}
-			return data, nil, nil
-		})
-	}
+	storedMeta := *meta
+	storedMeta.Name = gem
+	storedMeta.ContentHash = hash
+	storedMeta.Size = int64(len(content))
 
-	return nil
+	return idx.infoIndex.PutJSONWithOptions(
+		ctx,
+		gem,
+		&storedMeta,
+		blobRefs(hash),
+		metadb.PutOptions{Etag: storedMeta.ETag},
+	)
 }
 
 // GetSpecs retrieves the cached specs file (specs, latest_specs, or prerelease_specs).
@@ -352,4 +388,33 @@ func escapeJSON(s string) string {
 		}
 	}
 	return string(buf)
+}
+
+func (idx *Index) putContent(ctx context.Context, content []byte) (contentcache.Hash, error) {
+	if idx.store == nil {
+		return contentcache.Hash{}, errors.New("store is not configured")
+	}
+	return idx.store.Put(ctx, bytes.NewReader(content))
+}
+
+func (idx *Index) readContent(ctx context.Context, hash contentcache.Hash) ([]byte, error) {
+	if idx.store == nil {
+		return nil, errors.New("store is not configured")
+	}
+	if hash.IsZero() {
+		return nil, errors.New("content hash is not set")
+	}
+	rc, err := idx.store.Get(ctx, hash)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rc.Close() }()
+	return io.ReadAll(rc)
+}
+
+func blobRefs(hash contentcache.Hash) []string {
+	if hash.IsZero() {
+		return nil
+	}
+	return []string{contentcache.NewBlobRef(hash).String()}
 }

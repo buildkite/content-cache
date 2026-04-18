@@ -18,23 +18,25 @@ var ErrNotFound = errors.New("not found")
 
 // CachedVersions stores the cached /versions file metadata.
 type CachedVersions struct {
-	ETag       string    `json:"etag"`
-	ReprDigest string    `json:"repr_digest"` // SHA256 from Repr-Digest header
-	Size       int64     `json:"size"`        // For Range request support
-	CachedAt   time.Time `json:"cached_at"`
-	UpdatedAt  time.Time `json:"updated_at"`
+	ETag        string            `json:"etag"`
+	ReprDigest  string            `json:"repr_digest"` // SHA256 from Repr-Digest header
+	ContentHash contentcache.Hash `json:"content_hash"`
+	Size        int64             `json:"size"` // For Range request support
+	CachedAt    time.Time         `json:"cached_at"`
+	UpdatedAt   time.Time         `json:"updated_at"`
 }
 
 // CachedGemInfo stores cached /info/{gem} metadata.
 type CachedGemInfo struct {
-	Name       string            `json:"name"`
-	ETag       string            `json:"etag"`
-	ReprDigest string            `json:"repr_digest"` // SHA256 from Repr-Digest header
-	MD5        string            `json:"md5"`         // From /versions file (for invalidation)
-	Size       int64             `json:"size"`
-	Checksums  map[string]string `json:"checksums"` // version[-platform] -> SHA256 checksum
-	CachedAt   time.Time         `json:"cached_at"`
-	UpdatedAt  time.Time         `json:"updated_at"`
+	Name        string            `json:"name"`
+	ETag        string            `json:"etag"`
+	ReprDigest  string            `json:"repr_digest"` // SHA256 from Repr-Digest header
+	MD5         string            `json:"md5"`         // From /versions file (for invalidation)
+	ContentHash contentcache.Hash `json:"content_hash"`
+	Size        int64             `json:"size"`
+	Checksums   map[string]string `json:"checksums"` // version[-platform] -> SHA256 checksum
+	CachedAt    time.Time         `json:"cached_at"`
+	UpdatedAt   time.Time         `json:"updated_at"`
 }
 
 // CachedGem stores cached gem file metadata.
