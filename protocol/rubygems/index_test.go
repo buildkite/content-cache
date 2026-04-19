@@ -1,12 +1,17 @@
 package rubygems
 
 import (
+	"bytes"
 	"context"
+	"fmt"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
 	contentcache "github.com/buildkite/content-cache"
+	"github.com/buildkite/content-cache/backend"
+	"github.com/buildkite/content-cache/store"
 	"github.com/buildkite/content-cache/store/metadb"
 	"github.com/stretchr/testify/require"
 )
@@ -30,7 +35,11 @@ func newTestIndex(t *testing.T) (*Index, *metadb.BoltDB) {
 	gemspecIdx, err := metadb.NewEnvelopeIndex(db, "rubygems", "gemspec", 24*time.Hour)
 	require.NoError(t, err)
 
-	return NewIndex(versionsIdx, infoIdx, specsIdx, gemIdx, gemspecIdx), db
+	b, err := backend.NewFilesystem(filepath.Join(tmpDir, "blobs"))
+	require.NoError(t, err)
+	st := store.NewCAFS(b, store.WithMetaDB(db))
+
+	return NewIndex(versionsIdx, infoIdx, specsIdx, gemIdx, gemspecIdx, st), db
 }
 
 func TestIndexVersions(t *testing.T) {
@@ -90,6 +99,74 @@ func TestIndexVersionsAppend(t *testing.T) {
 	require.Equal(t, "line1\nline2\n", string(gotContent))
 }
 
+func TestIndexVersionsLargeContent(t *testing.T) {
+	idx, db := newTestIndex(t)
+	ctx := context.Background()
+
+	meta := &CachedVersions{
+		ETag:      `"large"`,
+		CachedAt:  time.Now(),
+		UpdatedAt: time.Now(),
+	}
+	content := bytes.Repeat([]byte("v"), metadb.MaxPayloadSize+1)
+
+	require.NoError(t, idx.PutVersions(ctx, meta, content))
+
+	gotMeta, gotContent, err := idx.GetVersions(ctx)
+	require.NoError(t, err)
+	require.Equal(t, int64(len(content)), gotMeta.Size)
+	require.Equal(t, content, gotContent)
+	require.False(t, gotMeta.ContentHash.IsZero())
+
+	env, err := db.GetEnvelope(ctx, "rubygems", "versions", versionsKey)
+	require.NoError(t, err)
+	require.Equal(t, metadb.ContentType_CONTENT_TYPE_JSON, env.ContentType)
+	require.Len(t, env.BlobRefs, 1)
+}
+
+func TestIndexVersionsRefreshesCachedAtFromUpdatedAt(t *testing.T) {
+	idx, _ := newTestIndex(t)
+	ctx := context.Background()
+
+	staleAt := time.Now().Add(-10 * time.Minute).Round(0)
+	refreshedAt := time.Now().Round(0)
+	meta := &CachedVersions{
+		ETag:       `"refreshed"`,
+		ReprDigest: "sha256digest",
+		CachedAt:   staleAt,
+		UpdatedAt:  refreshedAt,
+	}
+	content := []byte("---\nrails 7.0.0 abc123\n")
+
+	require.NoError(t, idx.PutVersions(ctx, meta, content))
+
+	gotMeta, _, err := idx.GetVersions(ctx)
+	require.NoError(t, err)
+	require.WithinDuration(t, refreshedAt, gotMeta.CachedAt, time.Millisecond)
+	require.WithinDuration(t, refreshedAt, gotMeta.UpdatedAt, time.Millisecond)
+	require.False(t, idx.IsExpired(gotMeta.CachedAt, time.Minute))
+}
+
+func TestIndexVersionsLegacyEnvelopeFallback(t *testing.T) {
+	idx, _ := newTestIndex(t)
+	ctx := context.Background()
+
+	content := []byte("---\nrails 7.0.0 abc123\n")
+	require.NoError(t, idx.versionsIndex.PutWithOptions(
+		ctx,
+		versionsKey,
+		content,
+		metadb.ContentType_CONTENT_TYPE_TEXT,
+		nil,
+		metadb.PutOptions{Etag: `"legacy"`},
+	))
+
+	gotMeta, gotContent, err := idx.GetVersions(ctx)
+	require.NoError(t, err)
+	require.Equal(t, `"legacy"`, gotMeta.ETag)
+	require.Equal(t, content, gotContent)
+}
+
 func TestIndexInfo(t *testing.T) {
 	idx, _ := newTestIndex(t)
 	ctx := context.Background()
@@ -127,6 +204,100 @@ func TestIndexInfo(t *testing.T) {
 	require.Equal(t, "abc123", gotMeta.Checksums["7.0.0"])
 	require.Equal(t, "def456", gotMeta.Checksums["7.0.0-x86_64-linux"])
 	require.Equal(t, "md5hash", gotMeta.MD5)
+}
+
+func TestIndexInfoLargeChecksums(t *testing.T) {
+	idx, db := newTestIndex(t)
+	ctx := context.Background()
+	gem := "rails"
+
+	checksums := make(map[string]string)
+	for i := 0; i < 64; i++ {
+		checksums[fmt.Sprintf("7.0.%d", i)] = strings.Repeat("a", 64)
+	}
+
+	meta := &CachedGemInfo{
+		Name:       gem,
+		ETag:       `"rails-etag"`,
+		ReprDigest: "sha256",
+		Checksums:  checksums,
+		MD5:        "md5hash",
+		CachedAt:   time.Now(),
+		UpdatedAt:  time.Now(),
+	}
+	content := []byte("---\n7.0.0 |checksum:abc123\n")
+
+	require.NoError(t, idx.PutInfo(ctx, gem, meta, content))
+
+	gotMeta, gotContent, err := idx.GetInfo(ctx, gem)
+	require.NoError(t, err)
+	require.Equal(t, string(content), string(gotContent))
+	require.Equal(t, checksums, gotMeta.Checksums)
+	require.False(t, gotMeta.ContentHash.IsZero())
+
+	env, err := db.GetEnvelope(ctx, "rubygems", "info", gem)
+	require.NoError(t, err)
+	require.Equal(t, metadb.ContentType_CONTENT_TYPE_JSON, env.ContentType)
+	require.Len(t, env.BlobRefs, 1)
+}
+
+func TestIndexInfoRefreshesCachedAtFromUpdatedAt(t *testing.T) {
+	idx, _ := newTestIndex(t)
+	ctx := context.Background()
+	gem := "rails"
+
+	staleAt := time.Now().Add(-10 * time.Minute).Round(0)
+	refreshedAt := time.Now().Round(0)
+	meta := &CachedGemInfo{
+		Name:       gem,
+		ETag:       `"rails-etag"`,
+		ReprDigest: "sha256",
+		Checksums: map[string]string{
+			"7.0.0": "abc123",
+		},
+		CachedAt:  staleAt,
+		UpdatedAt: refreshedAt,
+	}
+	content := []byte("---\n7.0.0 |checksum:abc123\n")
+
+	require.NoError(t, idx.PutInfo(ctx, gem, meta, content))
+
+	gotMeta, _, err := idx.GetInfo(ctx, gem)
+	require.NoError(t, err)
+	require.WithinDuration(t, refreshedAt, gotMeta.CachedAt, time.Millisecond)
+	require.WithinDuration(t, refreshedAt, gotMeta.UpdatedAt, time.Millisecond)
+	require.False(t, idx.IsExpired(gotMeta.CachedAt, time.Minute))
+}
+
+func TestIndexInfoLegacyEnvelopeFallback(t *testing.T) {
+	idx, _ := newTestIndex(t)
+	ctx := context.Background()
+	gem := "rails"
+	content := []byte("---\n7.0.0 |checksum:abc123\n")
+
+	require.NoError(t, idx.infoIndex.PutWithOptions(
+		ctx,
+		gem,
+		content,
+		metadb.ContentType_CONTENT_TYPE_TEXT,
+		nil,
+		metadb.PutOptions{Etag: `"legacy-info"`},
+	))
+	require.NoError(t, idx.infoIndex.Update(ctx, gem, func(data []byte, env *metadb.MetadataEnvelope) ([]byte, []string, error) {
+		if env.Attributes == nil {
+			env.Attributes = make(map[string][]byte)
+		}
+		env.Attributes["checksums"] = encodeChecksums(map[string]string{"7.0.0": "abc123"})
+		env.Attributes["md5"] = []byte("md5hash")
+		return data, nil, nil
+	}))
+
+	gotMeta, gotContent, err := idx.GetInfo(ctx, gem)
+	require.NoError(t, err)
+	require.Equal(t, `"legacy-info"`, gotMeta.ETag)
+	require.Equal(t, "abc123", gotMeta.Checksums["7.0.0"])
+	require.Equal(t, "md5hash", gotMeta.MD5)
+	require.Equal(t, content, gotContent)
 }
 
 func TestIndexSpecs(t *testing.T) {

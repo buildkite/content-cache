@@ -571,6 +571,7 @@ func New(cfg Config) (*Server, error) {
 		rubygemsSpecsIndex,
 		rubygemsGemIndex,
 		rubygemsGemspecIndex,
+		cafsStore,
 	)
 	rubygemsUpstreamOpts := []rubygems.UpstreamOption{rubygems.WithHTTPClient(rubygemsHTTPClient)}
 	if cfg.UpstreamRubyGems != "" {
