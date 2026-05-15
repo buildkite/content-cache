@@ -68,7 +68,7 @@ func (u *Upstream) FetchProjectPage(ctx context.Context, project string) ([]byte
 	normalized := NormalizeProjectName(project)
 	reqURL := u.baseURL + normalized + "/"
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, reqURL, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, reqURL, nil) //nolint:gosec // reqURL is constructed from operator-configured baseURL, not user input
 	if err != nil {
 		return nil, "", fmt.Errorf("creating request: %w", err)
 	}
@@ -76,7 +76,7 @@ func (u *Upstream) FetchProjectPage(ctx context.Context, project string) ([]byte
 	// Request JSON preferred, fallback to HTML
 	req.Header.Set("Accept", ContentTypeJSON+", "+ContentTypeHTML+";q=0.9")
 
-	resp, err := u.client.Do(req)
+	resp, err := u.client.Do(req) //nolint:gosec // request targets operator-configured upstream, not user-controlled
 	if err != nil {
 		return nil, "", fmt.Errorf("performing request: %w", err)
 	}

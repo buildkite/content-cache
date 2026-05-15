@@ -43,7 +43,7 @@ func newTestHandler(t *testing.T) (*Handler, *Index, store.Store) {
 func TestHandlerGetMiss(t *testing.T) {
 	handler, _, _ := newTestHandler(t)
 
-	req := httptest.NewRequest("GET", "/deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef", nil)
+	req := httptest.NewRequest(http.MethodGet, "/deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef", nil)
 	rec := httptest.NewRecorder()
 
 	handler.ServeHTTP(rec, req)
@@ -59,13 +59,13 @@ func TestHandlerPutThenGet(t *testing.T) {
 	outputID := "bb" + strings.Repeat("00", 31)
 
 	// PUT the blob.
-	putReq := httptest.NewRequest("PUT", "/"+actionID+"?output_id="+outputID, bytes.NewReader([]byte(blobContent)))
+	putReq := httptest.NewRequest(http.MethodPut, "/"+actionID+"?output_id="+outputID, bytes.NewReader([]byte(blobContent)))
 	putRec := httptest.NewRecorder()
 	handler.ServeHTTP(putRec, putReq)
 	require.Equal(t, http.StatusNoContent, putRec.Code)
 
 	// GET the blob.
-	getReq := httptest.NewRequest("GET", "/"+actionID, nil)
+	getReq := httptest.NewRequest(http.MethodGet, "/"+actionID, nil)
 	getRec := httptest.NewRecorder()
 	handler.ServeHTTP(getRec, getReq)
 
@@ -79,7 +79,7 @@ func TestHandlerPutThenGet(t *testing.T) {
 func TestHandlerMissingActionID(t *testing.T) {
 	handler, _, _ := newTestHandler(t)
 
-	req := httptest.NewRequest("GET", "/", nil)
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 
@@ -101,7 +101,7 @@ func TestHandlerInvalidActionID(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			req := httptest.NewRequest("GET", tt.actionID, nil)
+			req := httptest.NewRequest(http.MethodGet, tt.actionID, nil)
 			rec := httptest.NewRecorder()
 			handler.ServeHTTP(rec, req)
 			require.Equal(t, http.StatusBadRequest, rec.Code)
@@ -112,7 +112,7 @@ func TestHandlerInvalidActionID(t *testing.T) {
 func TestHandlerMethodNotAllowed(t *testing.T) {
 	handler, _, _ := newTestHandler(t)
 
-	req := httptest.NewRequest("DELETE", "/aa00", nil)
+	req := httptest.NewRequest(http.MethodDelete, "/aa00", nil)
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 
@@ -123,7 +123,7 @@ func TestHandlerPutMissingOutputID(t *testing.T) {
 	handler, _, _ := newTestHandler(t)
 
 	actionID := "aa" + strings.Repeat("00", 31)
-	req := httptest.NewRequest("PUT", "/"+actionID, bytes.NewReader([]byte("data")))
+	req := httptest.NewRequest(http.MethodPut, "/"+actionID, bytes.NewReader([]byte("data")))
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 

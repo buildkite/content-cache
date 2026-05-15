@@ -256,7 +256,7 @@ func (h *Handler) handleGetManifest(w http.ResponseWriter, r *http.Request, rr r
 	logger.Debug("cache miss, fetching from upstream")
 	content, mediaType, upstreamDigest, err := rr.Registry.Upstream.FetchManifest(ctx, rr.Name, rr.Reference)
 	if err != nil {
-		if err == ErrNotFound {
+		if errors.Is(err, ErrNotFound) {
 			http.Error(w, "not found", http.StatusNotFound)
 			return
 		}
@@ -336,7 +336,7 @@ func (h *Handler) handleHeadManifest(w http.ResponseWriter, r *http.Request, rr 
 	telemetry.SetCacheResult(r, telemetry.CacheMiss)
 	digest, size, mediaType, err := rr.Registry.Upstream.HeadManifest(ctx, rr.Name, rr.Reference)
 	if err != nil {
-		if err == ErrNotFound {
+		if errors.Is(err, ErrNotFound) {
 			http.Error(w, "not found", http.StatusNotFound)
 			return
 		}
@@ -562,7 +562,7 @@ func (h *Handler) handleHeadBlob(w http.ResponseWriter, r *http.Request, rr rout
 	telemetry.SetCacheResult(r, telemetry.CacheMiss)
 	size, err := rr.Registry.Upstream.HeadBlob(ctx, rr.Name, rr.Digest)
 	if err != nil {
-		if err == ErrNotFound {
+		if errors.Is(err, ErrNotFound) {
 			http.Error(w, "not found", http.StatusNotFound)
 			return
 		}

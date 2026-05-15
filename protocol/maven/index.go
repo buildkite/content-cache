@@ -2,6 +2,7 @@ package maven
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -45,7 +46,7 @@ func (idx *Index) GetCachedMetadata(ctx context.Context, groupID, artifactID str
 	key := metadataKey(groupID, artifactID)
 	var cached CachedMetadata
 	if err := idx.metadataIndex.GetJSON(ctx, key, &cached); err != nil {
-		if err == metadb.ErrNotFound {
+		if errors.Is(err, metadb.ErrNotFound) {
 			return nil, ErrNotFound
 		}
 		return nil, fmt.Errorf("reading metadata: %w", err)
@@ -78,7 +79,7 @@ func (idx *Index) GetCachedArtifact(ctx context.Context, coord ArtifactCoordinat
 	key := artifactKey(coord)
 	var cached CachedArtifact
 	if err := idx.artifactIndex.GetJSON(ctx, key, &cached); err != nil {
-		if err == metadb.ErrNotFound {
+		if errors.Is(err, metadb.ErrNotFound) {
 			return nil, ErrNotFound
 		}
 		return nil, fmt.Errorf("reading artifact: %w", err)
@@ -125,7 +126,7 @@ func (idx *Index) DeleteMetadata(ctx context.Context, groupID, artifactID string
 	defer idx.mu.Unlock()
 
 	key := metadataKey(groupID, artifactID)
-	if err := idx.metadataIndex.Delete(ctx, key); err != nil && err != metadb.ErrNotFound {
+	if err := idx.metadataIndex.Delete(ctx, key); err != nil && !errors.Is(err, metadb.ErrNotFound) {
 		return fmt.Errorf("deleting metadata: %w", err)
 	}
 
@@ -138,7 +139,7 @@ func (idx *Index) DeleteArtifact(ctx context.Context, coord ArtifactCoordinate) 
 	defer idx.mu.Unlock()
 
 	key := artifactKey(coord)
-	if err := idx.artifactIndex.Delete(ctx, key); err != nil && err != metadb.ErrNotFound {
+	if err := idx.artifactIndex.Delete(ctx, key); err != nil && !errors.Is(err, metadb.ErrNotFound) {
 		return fmt.Errorf("deleting artifact: %w", err)
 	}
 

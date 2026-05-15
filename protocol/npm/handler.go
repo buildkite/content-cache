@@ -223,7 +223,7 @@ func (h *Handler) writeMetadataResponse(w http.ResponseWriter, r *http.Request, 
 	if err := json.Unmarshal(metadata, &meta); err != nil {
 		// If we can't parse, just return as-is
 		w.Header().Set("Content-Type", "application/json")
-		if _, err := w.Write(metadata); err != nil {
+		if _, err := w.Write(metadata); err != nil { //nolint:gosec // proxy writing cached npm metadata verbatim
 			logger.Error("failed to write response", "error", err)
 		}
 		return

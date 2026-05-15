@@ -62,7 +62,7 @@ func (idx *Index) GetVersions(ctx context.Context) (*CachedVersions, []byte, err
 
 	content, env, err := idx.versionsIndex.GetWithEnvelope(ctx, versionsKey)
 	if err != nil {
-		if err == metadb.ErrNotFound {
+		if errors.Is(err, metadb.ErrNotFound) {
 			return nil, nil, ErrNotFound
 		}
 		return nil, nil, err
@@ -119,7 +119,7 @@ func (idx *Index) PutVersions(ctx context.Context, meta *CachedVersions, content
 func (idx *Index) AppendVersions(ctx context.Context, meta *CachedVersions, appendContent []byte) error {
 	// Read existing content
 	_, existingContent, err := idx.GetVersions(ctx)
-	if err != nil && err != ErrNotFound {
+	if err != nil && !errors.Is(err, ErrNotFound) {
 		return err
 	}
 
@@ -139,7 +139,7 @@ func (idx *Index) GetInfo(ctx context.Context, gem string) (*CachedGemInfo, []by
 
 	content, env, err := idx.infoIndex.GetWithEnvelope(ctx, gem)
 	if err != nil {
-		if err == metadb.ErrNotFound {
+		if errors.Is(err, metadb.ErrNotFound) {
 			return nil, nil, ErrNotFound
 		}
 		return nil, nil, err
@@ -214,7 +214,7 @@ func (idx *Index) GetSpecs(ctx context.Context, specsType string) (*CachedSpecs,
 
 	content, env, err := idx.specsIndex.GetWithEnvelope(ctx, specsType)
 	if err != nil {
-		if err == metadb.ErrNotFound {
+		if errors.Is(err, metadb.ErrNotFound) {
 			return nil, nil, ErrNotFound
 		}
 		return nil, nil, err
@@ -252,7 +252,7 @@ func (idx *Index) GetGem(ctx context.Context, filename string) (*CachedGem, erro
 
 	var cached CachedGem
 	if err := idx.gemIndex.GetJSON(ctx, filename, &cached); err != nil {
-		if err == metadb.ErrNotFound {
+		if errors.Is(err, metadb.ErrNotFound) {
 			return nil, ErrNotFound
 		}
 		return nil, err
@@ -283,7 +283,7 @@ func (idx *Index) GetGemspec(ctx context.Context, name, version, platform string
 	filename := gemspecFilename(name, version, platform)
 	var cached CachedGemspec
 	if err := idx.gemspecIndex.GetJSON(ctx, filename, &cached); err != nil {
-		if err == metadb.ErrNotFound {
+		if errors.Is(err, metadb.ErrNotFound) {
 			return nil, ErrNotFound
 		}
 		return nil, err

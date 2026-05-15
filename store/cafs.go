@@ -220,7 +220,7 @@ func (c *CAFS) Get(ctx context.Context, h contentcache.Hash) (io.ReadCloser, err
 			}
 		}()
 	} else if c.metadata != nil {
-		go func() { _ = c.metadata.Touch(context.Background(), h) }()
+		go func() { _ = c.metadata.Touch(context.Background(), h) }() //nolint:gosec // intentionally decoupled from request context; legacy metadata path has no server-scoped context
 	}
 
 	return rc, nil

@@ -230,7 +230,7 @@ func (h *SumdbHandler) writeResponse(w http.ResponseWriter, data []byte, content
 		w.Header().Set("Content-Type", contentType)
 	}
 	w.WriteHeader(statusCode)
-	_, _ = w.Write(data)
+	_, _ = w.Write(data) //nolint:gosec // transparent proxy forwarding cached sumdb data to client
 }
 
 // SumdbUpstream fetches data from an upstream sumdb.
@@ -275,12 +275,12 @@ func NewSumdbUpstream(opts ...SumdbUpstreamOption) *SumdbUpstream {
 func (u *SumdbUpstream) Fetch(ctx context.Context, endpoint string) ([]byte, string, int, error) {
 	url := fmt.Sprintf("%s/%s", u.baseURL, endpoint)
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil) //nolint:gosec // url is constructed from operator-configured baseURL, not user input
 	if err != nil {
 		return nil, "", 0, fmt.Errorf("creating request: %w", err)
 	}
 
-	resp, err := u.client.Do(req)
+	resp, err := u.client.Do(req) //nolint:gosec // request targets operator-configured upstream, not user-controlled
 	if err != nil {
 		return nil, "", 0, fmt.Errorf("performing request: %w", err)
 	}

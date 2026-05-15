@@ -112,7 +112,7 @@ func ReadFramed(r io.Reader) (*BlobHeader, io.Reader, error) {
 func IsFramed(r io.ReadSeeker) (bool, error) {
 	magic := make([]byte, 4)
 	n, err := r.Read(magic)
-	if err != nil && err != io.EOF {
+	if err != nil && !errors.Is(err, io.EOF) {
 		return false, fmt.Errorf("reading magic bytes: %w", err)
 	}
 

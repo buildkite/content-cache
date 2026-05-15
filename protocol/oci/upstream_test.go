@@ -172,7 +172,7 @@ func TestUpstreamWithAuth(t *testing.T) {
 	authServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		authCallCount++
 		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(TokenResponse{
+		_ = json.NewEncoder(w).Encode(TokenResponse{ //nolint:gosec // test mock token response
 			Token:     "test-token",
 			ExpiresIn: 300,
 		})

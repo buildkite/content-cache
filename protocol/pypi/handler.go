@@ -126,7 +126,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 		// Redirect if missing trailing slash
 		if !strings.HasSuffix(path, "/") {
-			http.Redirect(w, r, path+"/", http.StatusMovedPermanently)
+			http.Redirect(w, r, path+"/", http.StatusMovedPermanently) //nolint:gosec // path is validated to have /simple/ prefix; appending "/" is path normalization, not a redirect to user-supplied URL
 			return
 		}
 

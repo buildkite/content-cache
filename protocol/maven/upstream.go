@@ -94,12 +94,12 @@ func (u *Upstream) FetchMetadataRaw(ctx context.Context, groupID, artifactID str
 	path := groupIDToPath(groupID) + "/" + artifactID + "/maven-metadata.xml"
 	url := u.baseURL + "/" + path
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil) //nolint:gosec // url is constructed from operator-configured baseURL, not user input
 	if err != nil {
 		return nil, fmt.Errorf("creating request: %w", err)
 	}
 
-	resp, err := u.client.Do(req)
+	resp, err := u.client.Do(req) //nolint:gosec // request targets operator-configured upstream, not user-controlled
 	if err != nil {
 		return nil, fmt.Errorf("performing request: %w", err)
 	}
@@ -122,12 +122,12 @@ func (u *Upstream) FetchMetadataRaw(ctx context.Context, groupID, artifactID str
 func (u *Upstream) FetchArtifact(ctx context.Context, coord ArtifactCoordinate) (io.ReadCloser, int64, error) {
 	url := u.ArtifactURL(coord)
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil) //nolint:gosec // url is constructed from operator-configured baseURL, not user input
 	if err != nil {
 		return nil, 0, fmt.Errorf("creating request: %w", err)
 	}
 
-	resp, err := u.client.Do(req)
+	resp, err := u.client.Do(req) //nolint:gosec // request targets operator-configured upstream, not user-controlled
 	if err != nil {
 		return nil, 0, fmt.Errorf("performing request: %w", err)
 	}
@@ -150,12 +150,12 @@ func (u *Upstream) FetchArtifact(ctx context.Context, coord ArtifactCoordinate) 
 func (u *Upstream) FetchChecksum(ctx context.Context, coord ArtifactCoordinate, checksumType string) (string, error) {
 	url := u.ArtifactURL(coord) + "." + checksumType
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil) //nolint:gosec // url is constructed from operator-configured baseURL, not user input
 	if err != nil {
 		return "", fmt.Errorf("creating request: %w", err)
 	}
 
-	resp, err := u.client.Do(req)
+	resp, err := u.client.Do(req) //nolint:gosec // request targets operator-configured upstream, not user-controlled
 	if err != nil {
 		return "", fmt.Errorf("performing request: %w", err)
 	}

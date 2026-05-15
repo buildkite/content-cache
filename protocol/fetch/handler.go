@@ -376,7 +376,7 @@ func (h *Handler) doRequest(ctx context.Context, method, upstreamURL string, all
 	req.Header.Set("Accept-Encoding", "identity")
 	copyConditionalRequestHeaders(req, source)
 
-	resp, err := client.Do(req)
+	resp, err := client.Do(req) //nolint:gosec // request targets operator-configured upstream, not user-controlled
 	if err != nil {
 		return nil, err
 	}

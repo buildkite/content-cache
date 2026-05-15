@@ -147,7 +147,7 @@ func TestDo_DifferentKeys(t *testing.T) {
 		wg.Add(1)
 		go func(idx int) {
 			defer wg.Done()
-			key := "key-" + string(rune('a'+idx))
+			key := "key-" + string(rune('a'+idx)) //nolint:gosec // bounded: idx in [0,5)
 			_, _, errs[idx] = d.Do(context.Background(), key, func(ctx context.Context) (*Result, error) {
 				callCount.Add(1)
 				return &Result{Hash: contentcache.HashBytes([]byte(key)), Size: 1}, nil

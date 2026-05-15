@@ -2,6 +2,7 @@ package oci
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -84,7 +85,7 @@ func (u *Upstream) CheckVersion(ctx context.Context) error {
 	resp, err := u.doWithAuth(ctx, req, "")
 	if err != nil {
 		// ErrUnauthorized is acceptable - it means the registry exists but requires auth
-		if err == ErrUnauthorized {
+		if errors.Is(err, ErrUnauthorized) {
 			return nil
 		}
 		return err
@@ -274,7 +275,7 @@ func (u *Upstream) doWithAuth(ctx context.Context, req *http.Request, scope stri
 	u.authCache.SetToken(scope, tokenResp.Token, tokenResp.ExpiresIn)
 
 	// Clone the request for retry (original request body may be consumed)
-	retryReq, err := http.NewRequestWithContext(ctx, req.Method, req.URL.String(), nil)
+	retryReq, err := http.NewRequestWithContext(ctx, req.Method, req.URL.String(), nil) //nolint:gosec // retryReq reuses the original request URL which targets a configured upstream registry
 	if err != nil {
 		return nil, fmt.Errorf("creating retry request: %w", err)
 	}
@@ -290,5 +291,5 @@ func (u *Upstream) doWithAuth(ctx context.Context, req *http.Request, scope stri
 	retryReq.Header.Set("Authorization", "Bearer "+tokenResp.Token)
 
 	// Retry the request
-	return u.client.Do(retryReq)
+	return u.client.Do(retryReq) //nolint:gosec // request targets operator-configured OCI registry, not user-controlled
 }

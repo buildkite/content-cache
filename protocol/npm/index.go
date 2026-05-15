@@ -2,6 +2,7 @@ package npm
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"time"
 
@@ -43,7 +44,7 @@ func (idx *Index) GetPackageMetadata(ctx context.Context, name string) ([]byte, 
 	key := encodePackageName(name)
 	data, err := idx.metadataIndex.Get(ctx, key)
 	if err != nil {
-		if err == metadb.ErrNotFound {
+		if errors.Is(err, metadb.ErrNotFound) {
 			return nil, ErrNotFound
 		}
 		return nil, err
@@ -68,7 +69,7 @@ func (idx *Index) GetCachedPackage(ctx context.Context, name string) (*CachedPac
 	key := encodePackageName(name)
 	var cached CachedPackage
 	if err := idx.cacheIndex.GetJSON(ctx, key, &cached); err != nil {
-		if err == metadb.ErrNotFound {
+		if errors.Is(err, metadb.ErrNotFound) {
 			return nil, ErrNotFound
 		}
 		return nil, err
@@ -152,12 +153,12 @@ func (idx *Index) DeletePackage(ctx context.Context, name string) error {
 	encodedName := encodePackageName(name)
 
 	// Delete metadata
-	if err := idx.metadataIndex.Delete(ctx, encodedName); err != nil && err != metadb.ErrNotFound {
+	if err := idx.metadataIndex.Delete(ctx, encodedName); err != nil && !errors.Is(err, metadb.ErrNotFound) {
 		return err
 	}
 
 	// Delete cache info (with blob refs cleanup via EnvelopeIndex)
-	if err := idx.cacheIndex.Delete(ctx, encodedName); err != nil && err != metadb.ErrNotFound {
+	if err := idx.cacheIndex.Delete(ctx, encodedName); err != nil && !errors.Is(err, metadb.ErrNotFound) {
 		return err
 	}
 

@@ -2,6 +2,7 @@ package git
 
 import (
 	"context"
+	"errors"
 
 	contentcache "github.com/buildkite/content-cache"
 	"github.com/buildkite/content-cache/store/metadb"
@@ -24,7 +25,7 @@ func NewIndex(packIndex *metadb.EnvelopeIndex) *Index {
 func (idx *Index) GetCachedPack(ctx context.Context, cacheKey string) (*CachedPack, error) {
 	var cached CachedPack
 	if err := idx.packIndex.GetJSON(ctx, cacheKey, &cached); err != nil {
-		if err == metadb.ErrNotFound {
+		if errors.Is(err, metadb.ErrNotFound) {
 			return nil, ErrNotFound
 		}
 		return nil, err

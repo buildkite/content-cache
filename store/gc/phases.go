@@ -119,14 +119,14 @@ func (m *Manager) phaseDeleteOrphans(ctx context.Context, result *Result) {
 		// key for databases written before the blake3: prefix was introduced.
 		hash := contentcache.NewBlobRef(h).String()
 		_, err = m.db.GetBlob(ctx, hash)
-		if err == metadb.ErrNotFound {
+		if errors.Is(err, metadb.ErrNotFound) {
 			_, err = m.db.GetBlob(ctx, h.String())
 		}
 		if err == nil {
 			continue
 		}
 
-		if err != metadb.ErrNotFound {
+		if !errors.Is(err, metadb.ErrNotFound) {
 			result.Errors = append(result.Errors, fmt.Sprintf("check blob %s: %v", hash, err))
 			continue
 		}
@@ -155,7 +155,7 @@ func (m *Manager) phaseDeleteOrphans(ctx context.Context, result *Result) {
 // deleteBlob deletes a blob from both the backend and metadata store.
 func (m *Manager) deleteBlob(ctx context.Context, hash string) (int64, error) {
 	entry, err := m.db.GetBlob(ctx, hash)
-	if err != nil && err != metadb.ErrNotFound {
+	if err != nil && !errors.Is(err, metadb.ErrNotFound) {
 		return 0, fmt.Errorf("get blob metadata: %w", err)
 	}
 
@@ -174,7 +174,7 @@ func (m *Manager) deleteBlob(ctx context.Context, hash string) (int64, error) {
 		return 0, fmt.Errorf("delete from backend: %w", err)
 	}
 
-	if err := m.db.DeleteBlob(ctx, hash); err != nil && err != metadb.ErrNotFound {
+	if err := m.db.DeleteBlob(ctx, hash); err != nil && !errors.Is(err, metadb.ErrNotFound) {
 		return 0, fmt.Errorf("delete from metadb: %w", err)
 	}
 

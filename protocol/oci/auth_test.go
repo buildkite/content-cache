@@ -113,7 +113,7 @@ func TestFetchToken(t *testing.T) {
 			}
 
 			w.Header().Set("Content-Type", "application/json")
-			_ = json.NewEncoder(w).Encode(TokenResponse{
+			_ = json.NewEncoder(w).Encode(TokenResponse{ //nolint:gosec // test mock token response
 				Token:     "test-token-123",
 				ExpiresIn: 300,
 			})
@@ -136,7 +136,7 @@ func TestFetchToken(t *testing.T) {
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Content-Type", "application/json")
 			// Some registries use access_token instead of token
-			_ = json.NewEncoder(w).Encode(TokenResponse{
+			_ = json.NewEncoder(w).Encode(TokenResponse{ //nolint:gosec // test mock token response
 				AccessToken: "access-token-456",
 				ExpiresIn:   600,
 			})
@@ -157,7 +157,7 @@ func TestFetchToken(t *testing.T) {
 				return
 			}
 			w.Header().Set("Content-Type", "application/json")
-			_ = json.NewEncoder(w).Encode(TokenResponse{Token: "authed-token"})
+			_ = json.NewEncoder(w).Encode(TokenResponse{Token: "authed-token"}) //nolint:gosec // test mock token response
 		}))
 		defer server.Close()
 
@@ -170,7 +170,7 @@ func TestFetchToken(t *testing.T) {
 	t.Run("default expiry", func(t *testing.T) {
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Content-Type", "application/json")
-			_ = json.NewEncoder(w).Encode(TokenResponse{Token: "token"})
+			_ = json.NewEncoder(w).Encode(TokenResponse{Token: "token"}) //nolint:gosec // test mock token response
 		}))
 		defer server.Close()
 

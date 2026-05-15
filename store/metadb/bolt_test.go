@@ -316,7 +316,7 @@ func TestBoltDB_ConcurrentAccess(t *testing.T) {
 			defer wg.Done()
 			for j := 0; j < numOps; j++ {
 				protocol := "npm"
-				key := string(rune('a'+id)) + string(rune('0'+j%10))
+				key := string(rune('a'+id)) + string(rune('0'+j%10)) //nolint:gosec // bounded: id < numGoroutines (10), j%10 < 10
 				data := []byte("data")
 
 				_ = db.PutMeta(ctx, protocol, key, data, time.Hour)
@@ -324,7 +324,7 @@ func TestBoltDB_ConcurrentAccess(t *testing.T) {
 				_, _ = db.GetMeta(ctx, protocol, key)
 
 				now := time.Now()
-				hash := string(rune('h'+id)) + string(rune('0'+j%10))
+				hash := string(rune('h'+id)) + string(rune('0'+j%10)) //nolint:gosec // bounded: id < numGoroutines (10), j%10 < 10
 				_ = db.PutBlob(ctx, &BlobEntry{Hash: hash, Size: 100, CachedAt: now, LastAccess: now, RefCount: 1})
 
 				_, _ = db.GetBlob(ctx, hash)

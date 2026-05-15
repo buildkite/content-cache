@@ -2,6 +2,7 @@ package pypi
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"time"
 
@@ -33,7 +34,7 @@ func (idx *Index) GetCachedProject(ctx context.Context, name string) (*CachedPro
 	key := NormalizeProjectName(name)
 	var cached CachedProject
 	if err := idx.projectIndex.GetJSON(ctx, key, &cached); err != nil {
-		if err == metadb.ErrNotFound {
+		if errors.Is(err, metadb.ErrNotFound) {
 			return nil, ErrNotFound
 		}
 		return nil, err
@@ -133,7 +134,7 @@ func (idx *Index) DeleteProject(ctx context.Context, name string) error {
 	defer idx.mu.Unlock()
 
 	key := NormalizeProjectName(name)
-	if err := idx.projectIndex.Delete(ctx, key); err != nil && err != metadb.ErrNotFound {
+	if err := idx.projectIndex.Delete(ctx, key); err != nil && !errors.Is(err, metadb.ErrNotFound) {
 		return err
 	}
 

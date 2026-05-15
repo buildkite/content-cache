@@ -369,7 +369,7 @@ func (h *Handler) handleUploadPack(w http.ResponseWriter, r *http.Request, repo 
 		if _, seekErr := activeBodyFile.Seek(0, io.SeekStart); seekErr == nil {
 			debugBytes, _ := io.ReadAll(io.LimitReader(activeBodyFile, debugReadLimit))
 			_, _ = activeBodyFile.Seek(0, io.SeekStart)
-			logPktLineSummary(logger, debugBytes)
+			logPktLineSummary(ctx, logger, debugBytes)
 		}
 	}
 
@@ -514,8 +514,8 @@ func (h *Handler) fetchAndStorePack(ctx context.Context, repo RepoRef, gitProtoc
 
 // logPktLineSummary logs a summary of the git pkt-line request body for debugging.
 // It parses pkt-line framing (4-hex-digit length prefix) and summarizes the content.
-func logPktLineSummary(logger *slog.Logger, body []byte) {
-	if !logger.Enabled(context.Background(), slog.LevelDebug) {
+func logPktLineSummary(ctx context.Context, logger *slog.Logger, body []byte) {
+	if !logger.Enabled(ctx, slog.LevelDebug) {
 		return
 	}
 

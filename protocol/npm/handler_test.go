@@ -1,6 +1,7 @@
 package npm
 
 import (
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -195,19 +196,20 @@ func TestHandlerTarball(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/test-pkg" {
 			w.Header().Set("Content-Type", "application/json")
-			_, _ = w.Write([]byte(`{
+			body := fmt.Sprintf(`{
 				"name": "test-pkg",
 				"versions": {
 					"1.0.0": {
 						"name": "test-pkg",
 						"version": "1.0.0",
 						"dist": {
-							"tarball": "` + r.Host + `/test-pkg/-/test-pkg-1.0.0.tgz",
+							"tarball": "%s/test-pkg/-/test-pkg-1.0.0.tgz",
 							"shasum": "8a698aa23442e52ee3e7009f7f8578d8ee3c6bc1"
 						}
 					}
 				}
-			}`))
+			}`, r.Host)
+			_, _ = w.Write([]byte(body)) //nolint:gosec // test server writing mock npm metadata response
 			return
 		}
 		if r.URL.Path == "/test-pkg/-/test-pkg-1.0.0.tgz" {

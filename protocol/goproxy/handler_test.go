@@ -31,7 +31,7 @@ func TestHandlerList(t *testing.T) {
 	handler := newTestHandler(t, mockUpstream.URL)
 
 	// Request version list
-	req := httptest.NewRequest("GET", "/github.com/test/module/@v/list", nil)
+	req := httptest.NewRequest(http.MethodGet, "/github.com/test/module/@v/list", nil)
 	rec := httptest.NewRecorder()
 
 	handler.ServeHTTP(rec, req)
@@ -66,7 +66,7 @@ func TestHandlerInfo(t *testing.T) {
 
 	handler := newTestHandler(t, mockUpstream.URL)
 
-	req := httptest.NewRequest("GET", "/github.com/test/module/@v/v1.0.0.info", nil)
+	req := httptest.NewRequest(http.MethodGet, "/github.com/test/module/@v/v1.0.0.info", nil)
 	rec := httptest.NewRecorder()
 
 	handler.ServeHTTP(rec, req)
@@ -101,7 +101,7 @@ func TestHandlerMod(t *testing.T) {
 
 	handler := newTestHandler(t, mockUpstream.URL)
 
-	req := httptest.NewRequest("GET", "/github.com/test/module/@v/v1.0.0.mod", nil)
+	req := httptest.NewRequest(http.MethodGet, "/github.com/test/module/@v/v1.0.0.mod", nil)
 	rec := httptest.NewRecorder()
 
 	handler.ServeHTTP(rec, req)
@@ -133,7 +133,7 @@ func TestHandlerZip(t *testing.T) {
 
 	handler := newTestHandler(t, mockUpstream.URL)
 
-	req := httptest.NewRequest("GET", "/github.com/test/module/@v/v1.0.0.zip", nil)
+	req := httptest.NewRequest(http.MethodGet, "/github.com/test/module/@v/v1.0.0.zip", nil)
 	rec := httptest.NewRecorder()
 
 	handler.ServeHTTP(rec, req)
@@ -151,7 +151,7 @@ func TestHandlerNotFound(t *testing.T) {
 
 	handler := newTestHandler(t, mockUpstream.URL)
 
-	req := httptest.NewRequest("GET", "/github.com/nonexistent/module/@v/v1.0.0.info", nil)
+	req := httptest.NewRequest(http.MethodGet, "/github.com/nonexistent/module/@v/v1.0.0.info", nil)
 	rec := httptest.NewRecorder()
 
 	handler.ServeHTTP(rec, req)
@@ -193,7 +193,7 @@ func TestHandlerCacheHit(t *testing.T) {
 	_ = index.PutModuleVersion(ctx, "github.com/cached/module", "v1.0.0", mv, []byte("module cached\n"))
 
 	// Request cached module
-	req := httptest.NewRequest("GET", "/github.com/cached/module/@v/v1.0.0.info", nil)
+	req := httptest.NewRequest(http.MethodGet, "/github.com/cached/module/@v/v1.0.0.info", nil)
 	rec := httptest.NewRecorder()
 
 	initialCalls := upstreamCalls
@@ -225,7 +225,7 @@ func TestHandlerZipCacheHit(t *testing.T) {
 	_ = index.PutModuleVersion(ctx, "github.com/cached/module", "v1.0.0", mv, []byte("module cached\n"))
 
 	// Request cached zip
-	req := httptest.NewRequest("GET", "/github.com/cached/module/@v/v1.0.0.zip", nil)
+	req := httptest.NewRequest(http.MethodGet, "/github.com/cached/module/@v/v1.0.0.zip", nil)
 	rec := httptest.NewRecorder()
 
 	handler.ServeHTTP(rec, req)
@@ -252,7 +252,7 @@ func TestHandlerUppercaseModule(t *testing.T) {
 	handler := newTestHandler(t, mockUpstream.URL)
 
 	// Request with encoded uppercase path
-	req := httptest.NewRequest("GET", "/github.com/!azure/azure-sdk/@v/v1.0.0.info", nil)
+	req := httptest.NewRequest(http.MethodGet, "/github.com/!azure/azure-sdk/@v/v1.0.0.info", nil)
 	rec := httptest.NewRecorder()
 
 	handler.ServeHTTP(rec, req)
@@ -273,7 +273,7 @@ func TestHandlerInvalidPath(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			req := httptest.NewRequest("GET", tt.path, nil)
+			req := httptest.NewRequest(http.MethodGet, tt.path, nil)
 			rec := httptest.NewRecorder()
 
 			handler.ServeHTTP(rec, req)
@@ -286,7 +286,7 @@ func TestHandlerInvalidPath(t *testing.T) {
 func TestHandlerMethodNotAllowed(t *testing.T) {
 	handler := newTestHandler(t, "http://localhost")
 
-	req := httptest.NewRequest("POST", "/github.com/test/module/@v/list", nil)
+	req := httptest.NewRequest(http.MethodPost, "/github.com/test/module/@v/list", nil)
 	rec := httptest.NewRecorder()
 
 	handler.ServeHTTP(rec, req)

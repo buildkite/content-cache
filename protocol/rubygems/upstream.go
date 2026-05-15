@@ -81,14 +81,14 @@ func (u *Upstream) FetchVersions(ctx context.Context, etag string, rangeStart in
 
 // FetchInfo fetches the /info/{gem} file from upstream.
 func (u *Upstream) FetchInfo(ctx context.Context, gem string, etag string, rangeStart int64) (*CompactIndexResponse, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.baseURL+"/info/"+gem, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.baseURL+"/info/"+gem, nil) //nolint:gosec // url is constructed from operator-configured baseURL, not user input
 	if err != nil {
 		return nil, fmt.Errorf("creating request: %w", err)
 	}
 
 	u.setCompactIndexHeaders(req, etag, rangeStart)
 
-	resp, err := u.httpClient.Do(req)
+	resp, err := u.httpClient.Do(req) //nolint:gosec // request targets operator-configured upstream, not user-controlled
 	if err != nil {
 		return nil, fmt.Errorf("fetching info: %w", err)
 	}
@@ -193,12 +193,12 @@ func (u *Upstream) FetchGemspec(ctx context.Context, name, version, platform str
 func (u *Upstream) FetchGem(ctx context.Context, filename string) (io.ReadCloser, int64, error) {
 	url := fmt.Sprintf("%s/gems/%s", u.baseURL, filename)
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil) //nolint:gosec // url is constructed from operator-configured baseURL, not user input
 	if err != nil {
 		return nil, 0, fmt.Errorf("creating request: %w", err)
 	}
 
-	resp, err := u.httpClient.Do(req)
+	resp, err := u.httpClient.Do(req) //nolint:gosec // request targets operator-configured upstream, not user-controlled
 	if err != nil {
 		return nil, 0, fmt.Errorf("fetching gem: %w", err)
 	}

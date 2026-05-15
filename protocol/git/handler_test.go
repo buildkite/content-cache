@@ -639,7 +639,7 @@ func (rt *rewriteTransport) RoundTrip(req *http.Request) (*http.Response, error)
 	if req.URL.RawQuery != "" {
 		newURL += "?" + req.URL.RawQuery
 	}
-	newReq, err := http.NewRequestWithContext(req.Context(), req.Method, newURL, req.Body)
+	newReq, err := http.NewRequestWithContext(req.Context(), req.Method, newURL, req.Body) //nolint:gosec // newURL is constructed from test server address + request path, not user input
 	if err != nil {
 		return nil, err
 	}

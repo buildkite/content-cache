@@ -885,7 +885,7 @@ func (h *Handler) writeCompactIndex(w http.ResponseWriter, r *http.Request, cont
 	w.Header().Set("Content-Length", strconv.FormatInt(int64(len(content)), 10))
 
 	if r.Method != http.MethodHead {
-		if _, err := w.Write(content); err != nil {
+		if _, err := w.Write(content); err != nil { //nolint:gosec // proxy writing cached rubygems content verbatim
 			h.logger.Error("failed to write response", "error", err)
 		}
 	}
@@ -900,7 +900,7 @@ func (h *Handler) writeSpecs(w http.ResponseWriter, r *http.Request, content []b
 	w.Header().Set("Content-Length", strconv.FormatInt(int64(len(content)), 10))
 
 	if r.Method != http.MethodHead {
-		if _, err := w.Write(content); err != nil {
+		if _, err := w.Write(content); err != nil { //nolint:gosec // proxy writing cached rubygems specs verbatim
 			h.logger.Error("failed to write response", "error", err)
 		}
 	}
