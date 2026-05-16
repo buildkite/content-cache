@@ -1,6 +1,6 @@
 # content-cache
 
-A content-addressable caching proxy for Go modules, NPM packages, PyPI packages, Maven artifacts, RubyGems, OCI registries, Git repositories, and direct download artefacts. Reduces build times and network bandwidth by caching package downloads locally with automatic deduplication and expiration policies.
+A content-addressable caching proxy for Go modules, NPM packages, PyPI packages, Maven artifacts, RubyGems, OCI registries, Git repositories, direct download artefacts, and a generic HTTP build cache compatible with sccache and Gradle's HTTP Build Cache. Reduces build times and network bandwidth by caching package downloads and build artifacts locally with automatic deduplication and expiration policies.
 
 ## Problem
 
@@ -149,6 +149,24 @@ EOF
 export GOCACHEPROG="content-cache cacheprog --server http://localhost:8080"
 go build ./...  # First build: artifacts uploaded to server
 go build ./...  # Subsequent builds on any machine: artifacts served from server cache
+
+# Use as an sccache HTTP storage backend
+# sccache and Gradle's HTTP Build Cache share the same simple GET/PUT protocol.
+# Point sccache at the /httpcache/ endpoint:
+export SCCACHE_HTTP_URL=http://localhost:8080/httpcache/
+sccache --start-server
+cargo build  # First build: artifacts uploaded to server
+cargo build  # Subsequent builds: artifacts served from cache
+
+# Use as a Gradle HTTP Build Cache
+# In settings.gradle.kts:
+# buildCache {
+#     remote<HttpBuildCache> {
+#         url = uri("http://localhost:8080/httpcache/")
+#         isPush = true
+#     }
+# }
+./gradlew build  # Build outputs are stored in and served from the HTTP cache
 ```
 
 ## Performance
@@ -164,6 +182,7 @@ go build ./...  # Subsequent builds on any machine: artifacts served from server
 - **GOPROXY Protocol**: Full support for Go module proxy protocol (`/@v/list`, `.info`, `.mod`, `.zip`)
 - **Go Checksum Database Proxy**: Caches `sum.golang.org` lookups at `/sumdb/` (also accessible at `/goproxy/sumdb/`); entries never expire since they are cryptographically immutable
 - **Go Build Cache (GOCACHEPROG)**: `cacheprog` subcommand implements the `GOCACHEPROG` protocol, backed by the `/buildcache/` HTTP endpoint — enables shared, persistent build artifact caching across CI runners and developer machines
+- **HTTP Build Cache (sccache / Gradle)**: Generic HTTP build cache at `/{httpcache-prefix}/` (default `/httpcache/`) — compatible with sccache's HTTP storage backend and Gradle's `HttpBuildCache`. Both tools use the same simple `GET`/`PUT` protocol: `GET` returns the cached blob or 404, `PUT` stores a blob keyed by an arbitrary string. No upstream fetch; this is a write-through cache only.
 - **NPM Registry Protocol**: Complete NPM registry support with tarball caching and integrity verification
 - **PyPI Simple API**: Full support for PEP 503/691 Simple Repository API with wheel and sdist caching
 - **Maven Repository**: Full support for Maven Central with JAR, POM, and checksum caching
@@ -201,6 +220,7 @@ graph TD
     A --> I[RubyGems Handler]
     A --> J[Git Handler]
     A --> K[BuildCache Handler]
+    A --> L[HTTPCache Handler]
 
     B --> DL[Download Deduplication]
     C --> DL
@@ -210,6 +230,7 @@ graph TD
     I --> DL
     J --> DL
     K --> E
+    L --> E
 
     DL --> E[Content-Addressable Store]
 
@@ -224,6 +245,7 @@ graph TD
     A -.-> A6["/rubygems/*"]
     A -.-> A8["/git/*"]
     A -.-> A10["/buildcache/*"]
+    A -.-> A11["/httpcache/*"]
     A -.-> A7["/health, /stats"]
 
     E -.-> E1["blobs/{hash[0:2]}/{hash}"]
@@ -343,7 +365,7 @@ OIDC authentication allows CI/CD pipelines to use short-lived identity tokens ra
 | `issuer` | OIDC issuer URL — must match the `iss` claim exactly |
 | `audience` | Allowed audience values — must match the `aud` claim. Omitting this field skips audience validation (not recommended) |
 | `required_claims` | Map of claim name → expected value. Supports `*` wildcard suffix (e.g. `"refs/heads/*"`) and lists |
-| `permissions` | Protocol names this policy grants: `goproxy`, `npm`, `oci`, `pypi`, `maven`, `rubygems`, `git`, `fetch`, `sumdb`, `buildcache`, `admin`. Use `"*"` to grant all. |
+| `permissions` | Protocol names this policy grants: `goproxy`, `npm`, `oci`, `pypi`, `maven`, `rubygems`, `git`, `fetch`, `sumdb`, `buildcache`, `httpcache`, `admin`. Use `"*"` to grant all. |
 
 **Using OIDC tokens in CI/CD:**
 
@@ -399,6 +421,15 @@ OCI registry credentials (username/password) are configured via the credentials 
 |------|---------------------|---------|-------------|
 | `--git-allowed-hosts` | `GIT_ALLOWED_HOSTS` | | Comma-separated list of allowed Git upstream hosts (e.g., `github.com,gitlab.com`) |
 | `--git-max-request-body` | `GIT_MAX_REQUEST_BODY` | `104857600` | Maximum git-upload-pack request body size in bytes (100MB) |
+
+### HTTP Build Cache Options (sccache / Gradle)
+
+| Flag | Environment Variable | Default | Description |
+|------|---------------------|---------|-------------|
+| `--httpcache-prefix` | `HTTPCACHE_PREFIX` | `httpcache` | URL path prefix for the HTTP cache endpoint |
+| `--httpcache-ttl` | `HTTPCACHE_TTL` | `24h` | TTL for cached build artifacts |
+
+Point clients at `http://host/{httpcache-prefix}/`. The prefix lets you run multiple build cache namespaces or use a path expected by a particular tool (e.g. change it to `cache` if a tool hardcodes that path).
 
 ### Cache Management
 
@@ -677,6 +708,11 @@ curl http://localhost:8080/v2/
 # Test an OCI manifest request (uses prefix-based routing)
 curl http://localhost:8080/v2/docker-hub/library/alpine/manifests/latest
 
+# Test the HTTP build cache endpoint (sccache / Gradle)
+curl -X PUT http://localhost:8080/httpcache/abc123 --data-binary "artifact data"
+curl -v http://localhost:8080/httpcache/abc123   # 200 on hit
+curl -v http://localhost:8080/httpcache/missing  # 404 on miss
+
 # Health check
 curl http://localhost:8080/health
 
@@ -701,7 +737,7 @@ content-cache exports OpenTelemetry metrics for monitoring cache effectiveness.
 
 ### Labels
 
-- `protocol`: npm, pypi, goproxy, sumdb, maven, rubygems, oci, git, buildcache
+- `protocol`: npm, pypi, goproxy, sumdb, maven, rubygems, oci, git, buildcache, httpcache
 - `endpoint`: metadata, tarball, artifact, blob, manifest, etc.
 - `cache_result`: hit, miss, bypass
 - `status_class`: 2xx, 3xx, 4xx, 5xx

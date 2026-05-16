@@ -21,6 +21,7 @@ import (
 	"github.com/buildkite/content-cache/protocol/fetch"
 	"github.com/buildkite/content-cache/protocol/git"
 	"github.com/buildkite/content-cache/protocol/goproxy"
+	"github.com/buildkite/content-cache/protocol/httpcache"
 	"github.com/buildkite/content-cache/protocol/maven"
 	"github.com/buildkite/content-cache/protocol/npm"
 	"github.com/buildkite/content-cache/protocol/oci"
@@ -122,6 +123,14 @@ type Config struct {
 	// Default: 24h (entries are content-addressed and effectively immutable)
 	BuildCacheTTL time.Duration
 
+	// HTTPCacheTTL is how long to retain sccache/Gradle HTTP build cache entries.
+	// Default: 24h
+	HTTPCacheTTL time.Duration
+
+	// HTTPCachePrefix is the URL path prefix for the HTTP cache endpoint.
+	// Default: "httpcache"
+	HTTPCachePrefix string
+
 	// SumDBName is the name of the checksum database to proxy.
 	// Default: sum.golang.org
 	SumDBName string
@@ -194,6 +203,8 @@ type Server struct {
 	sumdb           *goproxy.SumdbHandler
 	buildcacheIndex *buildcache.Index
 	buildcache      *buildcache.Handler
+	httpcacheIndex  *httpcache.Index
+	httpcache       *httpcache.Handler
 	metaDB          metadb.MetaDB
 	gcManager       *gc.Manager
 	s3fifoManager   *s3fifo.Manager
@@ -697,6 +708,25 @@ func New(cfg Config) (*Server, error) {
 		buildcache.WithLogger(cfg.Logger.With("component", "buildcache")),
 	)
 
+	// Initialize HTTP cache components (sccache / Gradle HTTP Build Cache).
+	httpCacheTTL := cfg.HTTPCacheTTL
+	if httpCacheTTL == 0 {
+		httpCacheTTL = 24 * time.Hour
+	}
+	if cfg.HTTPCachePrefix == "" {
+		cfg.HTTPCachePrefix = "httpcache"
+	}
+	httpcacheEntryIndex, err := metadb.NewEnvelopeIndex(metaDB, "httpcache", "entry", httpCacheTTL, withCodec)
+	if err != nil {
+		return nil, fmt.Errorf("creating httpcache entry index: %w", err)
+	}
+	httpcacheIdx := httpcache.NewIndex(httpcacheEntryIndex)
+	httpcacheHndlr := httpcache.NewHandler(
+		httpcacheIdx,
+		cafsStore,
+		httpcache.WithLogger(cfg.Logger.With("component", "httpcache")),
+	)
+
 	s := &Server{
 		config:          cfg,
 		logger:          cfg.Logger,
@@ -722,6 +752,8 @@ func New(cfg Config) (*Server, error) {
 		sumdb:           sumdbHandler,
 		buildcacheIndex: buildcacheIdx,
 		buildcache:      buildcacheHndlr,
+		httpcacheIndex:  httpcacheIdx,
+		httpcache:       httpcacheHndlr,
 		metaDB:          metaDB,
 		gcManager:       gcManager,
 		s3fifoManager:   s3fifoMgr,
@@ -828,6 +860,16 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	mux.Handle("GET /buildcache/", buildcacheHndlr)
 	mux.Handle("PUT /buildcache/", buildcacheHndlr)
 
+	// HTTP cache endpoints (sccache / Gradle HTTP Build Cache)
+	// The method-less pattern is required so Go's mux does not auto-405 non-standard
+	// WebDAV methods (PROPFIND, MKCOL) before they reach our handler. Method-qualified
+	// patterns take priority for GET and PUT; the catch-all handles everything else.
+	httpCachePathPrefix := "/" + s.config.HTTPCachePrefix
+	httpcacheHndlr := withProtocol("httpcache", http.StripPrefix(httpCachePathPrefix, s.httpcache))
+	mux.Handle("GET "+httpCachePathPrefix+"/", httpcacheHndlr)
+	mux.Handle("PUT "+httpCachePathPrefix+"/", httpcacheHndlr)
+	mux.Handle(httpCachePathPrefix+"/", httpcacheHndlr)
+
 }
 
 // handleHealth handles health check requests.
@@ -906,7 +948,7 @@ func (s *Server) loggingMiddleware(next http.Handler) http.Handler {
 		// Resolve protocol: prefer tag set by WithProtocol middleware, fall back to path derivation
 		protocol := tags.Protocol
 		if protocol == "" {
-			protocol = deriveProtocol(r.URL.Path)
+			protocol = s.deriveProtocol(r.URL.Path)
 		}
 
 		// Build log attributes
@@ -1048,7 +1090,7 @@ func (rw *responseWriter) Unwrap() http.ResponseWriter {
 }
 
 // deriveProtocol extracts the protocol name from the request path.
-func deriveProtocol(p string) string {
+func (s *Server) deriveProtocol(p string) string {
 	switch {
 	case p == "/health" || p == "/stats" || p == "/metrics":
 		return "internal"
@@ -1072,6 +1114,8 @@ func deriveProtocol(p string) string {
 		return "goproxy"
 	case strings.HasPrefix(p, "/buildcache/"):
 		return "buildcache"
+	case strings.HasPrefix(p, "/"+s.config.HTTPCachePrefix+"/"):
+		return "httpcache"
 	case strings.HasPrefix(p, "/v2"):
 		return "oci"
 	default:

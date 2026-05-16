@@ -63,6 +63,9 @@ type ServeCmd struct {
 	PyPIMetadataTTL     time.Duration `kong:"name='pypi-metadata-ttl',default='5m',env='PYPI_METADATA_TTL',help='TTL for PyPI project metadata cache',group='TTL'"`
 	MavenMetadataTTL    time.Duration `kong:"name='maven-metadata-ttl',default='5m',env='MAVEN_METADATA_TTL',help='TTL for maven-metadata.xml cache',group='TTL'"`
 	RubyGemsMetadataTTL time.Duration `kong:"name='rubygems-metadata-ttl',default='5m',env='RUBYGEMS_METADATA_TTL',help='TTL for RubyGems metadata cache',group='TTL'"`
+	HTTPCacheTTL        time.Duration `kong:"name='httpcache-ttl',default='24h',env='HTTPCACHE_TTL',help='TTL for sccache/Gradle HTTP build cache entries',group='TTL'"`
+
+	HTTPCachePrefix string `kong:"name='httpcache-prefix',default='httpcache',env='HTTPCACHE_PREFIX',help='URL path prefix for the HTTP cache endpoint (sccache/Gradle)',group='Cache'"`
 
 	BlobRetention       time.Duration `kong:"name='blob-retention',default='24h',env='BLOB_RETENTION',help='Minimum time to retain blobs after last access before GC may delete them (0 to disable)',group='Cache'"`
 	CacheMaxSize        int64         `kong:"name='cache-max-size',default='10737418240',env='CACHE_MAX_SIZE',help='Maximum cache size in bytes (default: 10GB, 0 to disable)',group='Cache'"`
@@ -242,6 +245,8 @@ func (cmd *ServeCmd) Run() error {
 		GitAllowedHosts:       cmd.GitAllowedHosts,
 		FetchAllowedHosts:     cmd.FetchAllowedHosts,
 		FetchMetadataTTL:      cmd.FetchMetadataTTL,
+		HTTPCacheTTL:          cmd.HTTPCacheTTL,
+		HTTPCachePrefix:       cmd.HTTPCachePrefix,
 		GitMaxRequestBodySize: cmd.GitMaxRequestBodySize,
 		BlobRetention:         cmd.BlobRetention,
 		CacheMaxSize:          cmd.CacheMaxSize,
