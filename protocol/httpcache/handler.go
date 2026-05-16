@@ -5,6 +5,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -84,12 +85,7 @@ func isValidKey(s string) bool {
 	if s == "" {
 		return false
 	}
-	for _, seg := range strings.Split(s, "/") {
-		if seg == ".." {
-			return false
-		}
-	}
-	return true
+	return !slices.Contains(strings.Split(s, "/"), "..")
 }
 
 // handlePropfind responds to WebDAV PROPFIND requests with a minimal 207 Multi-Status.
@@ -102,7 +98,7 @@ func (h *Handler) handlePropfind(w http.ResponseWriter, r *http.Request) {
 	// blocking all cache writes.
 	lastModified := time.Now().UTC().Format(http.TimeFormat)
 	w.Header().Set("Content-Type", "application/xml; charset=utf-8")
-	w.WriteHeader(207)
+	w.WriteHeader(http.StatusMultiStatus)
 	_, _ = w.Write([]byte(`<?xml version="1.0" encoding="utf-8"?>` +
 		`<D:multistatus xmlns:D="DAV:">` +
 		`<D:response><D:href>` + href + `</D:href>` +
