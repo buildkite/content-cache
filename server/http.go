@@ -127,10 +127,6 @@ type Config struct {
 	// Default: 24h
 	HTTPCacheTTL time.Duration
 
-	// HTTPCachePrefix is the URL path prefix for the HTTP cache endpoint.
-	// Default: "httpcache"
-	HTTPCachePrefix string
-
 	// SumDBName is the name of the checksum database to proxy.
 	// Default: sum.golang.org
 	SumDBName string
@@ -713,9 +709,6 @@ func New(cfg Config) (*Server, error) {
 	if httpCacheTTL == 0 {
 		httpCacheTTL = 24 * time.Hour
 	}
-	if cfg.HTTPCachePrefix == "" {
-		cfg.HTTPCachePrefix = "httpcache"
-	}
 	httpcacheEntryIndex, err := metadb.NewEnvelopeIndex(metaDB, "httpcache", "entry", httpCacheTTL, withCodec)
 	if err != nil {
 		return nil, fmt.Errorf("creating httpcache entry index: %w", err)
@@ -860,15 +853,12 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	mux.Handle("GET /buildcache/", buildcacheHndlr)
 	mux.Handle("PUT /buildcache/", buildcacheHndlr)
 
-	// HTTP cache endpoints (sccache / Gradle HTTP Build Cache)
-	// The method-less pattern is required so Go's mux does not auto-405 non-standard
-	// WebDAV methods (PROPFIND, MKCOL) before they reach our handler. Method-qualified
-	// patterns take priority for GET and PUT; the catch-all handles everything else.
-	httpCachePathPrefix := "/" + s.config.HTTPCachePrefix
-	httpcacheHndlr := withProtocol("httpcache", http.StripPrefix(httpCachePathPrefix, s.httpcache))
-	mux.Handle("GET "+httpCachePathPrefix+"/", httpcacheHndlr)
-	mux.Handle("PUT "+httpCachePathPrefix+"/", httpcacheHndlr)
-	mux.Handle(httpCachePathPrefix+"/", httpcacheHndlr)
+	// HTTP cache endpoints (sccache / Gradle HTTP Build Cache).
+	// The method-less pattern is necessary — method-qualified patterns cause Go's mux
+	// to auto-405 any method not explicitly registered (e.g. PROPFIND, MKCOL from sccache's
+	// WebDAV mode) before the request reaches our handler.
+	httpcacheHndlr := withProtocol("httpcache", http.StripPrefix("/httpcache", s.httpcache))
+	mux.Handle("/httpcache/", httpcacheHndlr)
 
 }
 
@@ -948,7 +938,7 @@ func (s *Server) loggingMiddleware(next http.Handler) http.Handler {
 		// Resolve protocol: prefer tag set by WithProtocol middleware, fall back to path derivation
 		protocol := tags.Protocol
 		if protocol == "" {
-			protocol = s.deriveProtocol(r.URL.Path)
+			protocol = deriveProtocol(r.URL.Path)
 		}
 
 		// Build log attributes
@@ -1090,7 +1080,7 @@ func (rw *responseWriter) Unwrap() http.ResponseWriter {
 }
 
 // deriveProtocol extracts the protocol name from the request path.
-func (s *Server) deriveProtocol(p string) string {
+func deriveProtocol(p string) string {
 	switch {
 	case p == "/health" || p == "/stats" || p == "/metrics":
 		return "internal"
@@ -1114,7 +1104,7 @@ func (s *Server) deriveProtocol(p string) string {
 		return "goproxy"
 	case strings.HasPrefix(p, "/buildcache/"):
 		return "buildcache"
-	case strings.HasPrefix(p, "/"+s.config.HTTPCachePrefix+"/"):
+	case strings.HasPrefix(p, "/httpcache/"):
 		return "httpcache"
 	case strings.HasPrefix(p, "/v2"):
 		return "oci"

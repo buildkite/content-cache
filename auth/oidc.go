@@ -22,7 +22,7 @@ type TrustPolicy struct {
 	RequiredClaims map[string]any `json:"required_claims"`
 	// Permissions lists the protocol names this policy grants access to.
 	// Use "*" to allow all protocols.
-	// Valid names: goproxy, npm, oci, pypi, maven, rubygems, git, fetch, sumdb, buildcache, admin
+	// Valid names: goproxy, npm, oci, pypi, maven, rubygems, git, fetch, sumdb, buildcache, httpcache, admin
 	Permissions []string `json:"permissions"`
 }
 

@@ -1,6 +1,7 @@
 package httpcache
 
 import (
+	"encoding/xml"
 	"errors"
 	"io"
 	"log/slog"
@@ -25,9 +26,10 @@ import (
 // Keys may contain slashes (sccache uses a/b/c/{hash} sharding). Path traversal (..)
 // is rejected.
 type Handler struct {
-	index  *Index
-	store  store.Store
-	logger *slog.Logger
+	index       *Index
+	store       store.Store
+	logger      *slog.Logger
+	maxBodySize int64
 }
 
 // HandlerOption configures a Handler.
@@ -38,12 +40,18 @@ func WithLogger(logger *slog.Logger) HandlerOption {
 	return func(h *Handler) { h.logger = logger }
 }
 
+// WithMaxBodySize sets the maximum allowed PUT request body size in bytes.
+func WithMaxBodySize(n int64) HandlerOption {
+	return func(h *Handler) { h.maxBodySize = n }
+}
+
 // NewHandler creates a new HTTP cache handler.
 func NewHandler(index *Index, store store.Store, opts ...HandlerOption) *Handler {
 	h := &Handler{
-		index:  index,
-		store:  store,
-		logger: slog.Default(),
+		index:       index,
+		store:       store,
+		logger:      slog.Default(),
+		maxBodySize: DefaultMaxBodySize,
 	}
 	for _, opt := range opts {
 		opt(h)
@@ -92,16 +100,17 @@ func isValidKey(s string) bool {
 // sccache sends PROPFIND on startup as a connectivity check before issuing GET/PUT/MKCOL.
 func (h *Handler) handlePropfind(w http.ResponseWriter, r *http.Request) {
 	telemetry.SetEndpoint(r, "propfind")
-	href := r.URL.Path
 	// opendal (used by sccache) requires getlastmodified in PROPFIND responses —
 	// it's a non-optional String field and parse_rfc2822("") fails, silently
 	// blocking all cache writes.
 	lastModified := time.Now().UTC().Format(http.TimeFormat)
+	var hrefEscaped strings.Builder
+	_ = xml.EscapeText(&hrefEscaped, []byte(r.URL.Path))
 	w.Header().Set("Content-Type", "application/xml; charset=utf-8")
 	w.WriteHeader(http.StatusMultiStatus)
 	_, _ = w.Write([]byte(`<?xml version="1.0" encoding="utf-8"?>` +
 		`<D:multistatus xmlns:D="DAV:">` +
-		`<D:response><D:href>` + href + `</D:href>` +
+		`<D:response><D:href>` + hrefEscaped.String() + `</D:href>` +
 		`<D:propstat><D:prop>` +
 		`<D:resourcetype><D:collection/></D:resourcetype>` +
 		`<D:getlastmodified>` + lastModified + `</D:getlastmodified>` +
@@ -156,8 +165,14 @@ func (h *Handler) handlePut(w http.ResponseWriter, r *http.Request, key string) 
 	ctx := r.Context()
 	logger := h.logger.With("key", key)
 
-	hash, err := h.store.Put(ctx, r.Body)
+	body := http.MaxBytesReader(w, r.Body, h.maxBodySize)
+	hash, err := h.store.Put(ctx, body)
 	if err != nil {
+		var maxBytesErr *http.MaxBytesError
+		if errors.As(err, &maxBytesErr) {
+			http.Error(w, "request body too large", http.StatusRequestEntityTooLarge)
+			return
+		}
 		logger.Error("failed to store blob", "error", err)
 		http.Error(w, "storage error", http.StatusInternalServerError)
 		return
@@ -180,6 +195,6 @@ func (h *Handler) handlePut(w http.ResponseWriter, r *http.Request, key string) 
 		return
 	}
 
-	logger.Debug("stored cache entry", "key", key, "size", size)
+	logger.Debug("stored cache entry", "size", size)
 	w.WriteHeader(http.StatusNoContent)
 }

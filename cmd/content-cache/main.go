@@ -65,8 +65,6 @@ type ServeCmd struct {
 	RubyGemsMetadataTTL time.Duration `kong:"name='rubygems-metadata-ttl',default='5m',env='RUBYGEMS_METADATA_TTL',help='TTL for RubyGems metadata cache',group='TTL'"`
 	HTTPCacheTTL        time.Duration `kong:"name='httpcache-ttl',default='24h',env='HTTPCACHE_TTL',help='TTL for sccache/Gradle HTTP build cache entries',group='TTL'"`
 
-	HTTPCachePrefix string `kong:"name='httpcache-prefix',default='httpcache',env='HTTPCACHE_PREFIX',help='URL path prefix for the HTTP cache endpoint (sccache/Gradle)',group='Cache'"`
-
 	BlobRetention       time.Duration `kong:"name='blob-retention',default='24h',env='BLOB_RETENTION',help='Minimum time to retain blobs after last access before GC may delete them (0 to disable)',group='Cache'"`
 	CacheMaxSize        int64         `kong:"name='cache-max-size',default='10737418240',env='CACHE_MAX_SIZE',help='Maximum cache size in bytes (default: 10GB, 0 to disable)',group='Cache'"`
 	ExpiryCheckInterval time.Duration `kong:"name='expiry-check-interval',default='1h',env='EXPIRY_CHECK_INTERVAL',help='How often to check for expired content',group='Cache'"`
@@ -246,7 +244,6 @@ func (cmd *ServeCmd) Run() error {
 		FetchAllowedHosts:     cmd.FetchAllowedHosts,
 		FetchMetadataTTL:      cmd.FetchMetadataTTL,
 		HTTPCacheTTL:          cmd.HTTPCacheTTL,
-		HTTPCachePrefix:       cmd.HTTPCachePrefix,
 		GitMaxRequestBodySize: cmd.GitMaxRequestBodySize,
 		BlobRetention:         cmd.BlobRetention,
 		CacheMaxSize:          cmd.CacheMaxSize,

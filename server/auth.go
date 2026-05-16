@@ -121,6 +121,8 @@ func protocolFromPath(path string) string {
 		return "goproxy"
 	case strings.HasPrefix(path, "/buildcache/"):
 		return "buildcache"
+	case strings.HasPrefix(path, "/httpcache/"):
+		return "httpcache"
 	default:
 		return "unknown"
 	}

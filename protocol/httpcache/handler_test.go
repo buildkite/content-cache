@@ -212,6 +212,61 @@ func TestIndexGetPut(t *testing.T) {
 	require.Equal(t, entry.Size, got.Size)
 }
 
+func TestHandlerPutReplacesExistingKey(t *testing.T) {
+	handler, _, _ := newTestHandler(t)
+	key := "replacekey"
+
+	for i, content := range []string{"first content", "second content"} {
+		putReq := httptest.NewRequest(http.MethodPut, "/"+key, bytes.NewReader([]byte(content)))
+		putRec := httptest.NewRecorder()
+		handler.ServeHTTP(putRec, putReq)
+		require.Equal(t, http.StatusNoContent, putRec.Code, "PUT %d failed", i)
+	}
+
+	getReq := httptest.NewRequest(http.MethodGet, "/"+key, nil)
+	getRec := httptest.NewRecorder()
+	handler.ServeHTTP(getRec, getReq)
+	require.Equal(t, http.StatusOK, getRec.Code)
+	body, _ := io.ReadAll(getRec.Body)
+	require.Equal(t, "second content", string(body))
+}
+
+func TestHandlerIndexHitBlobMissing(t *testing.T) {
+	handler, idx, _ := newTestHandler(t)
+
+	// Inject an index entry pointing to a non-existent blob.
+	err := idx.Put(context.Background(), "ghostkey", &CacheEntry{
+		BlobHash: "blake3:" + strings.Repeat("aa", 32),
+		Size:     42,
+	})
+	require.NoError(t, err)
+
+	getReq := httptest.NewRequest(http.MethodGet, "/ghostkey", nil)
+	getRec := httptest.NewRecorder()
+	handler.ServeHTTP(getRec, getReq)
+	require.Equal(t, http.StatusNotFound, getRec.Code)
+}
+
+func TestHandlerBodyTooLarge(t *testing.T) {
+	handler, _, _ := newTestHandler(t)
+	handler.maxBodySize = 10 // override for test
+
+	body := bytes.NewReader(bytes.Repeat([]byte("x"), 11))
+	putReq := httptest.NewRequest(http.MethodPut, "/bigkey", body)
+	putRec := httptest.NewRecorder()
+	handler.ServeHTTP(putRec, putReq)
+	require.Equal(t, http.StatusRequestEntityTooLarge, putRec.Code)
+}
+
+func TestHandlerHeadNotAllowed(t *testing.T) {
+	handler, _, _ := newTestHandler(t)
+
+	req := httptest.NewRequest(http.MethodHead, "/somekey", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	require.Equal(t, http.StatusMethodNotAllowed, rec.Code)
+}
+
 func TestIsValidKey(t *testing.T) {
 	tests := []struct {
 		input string

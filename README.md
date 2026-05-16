@@ -426,10 +426,9 @@ OCI registry credentials (username/password) are configured via the credentials 
 
 | Flag | Environment Variable | Default | Description |
 |------|---------------------|---------|-------------|
-| `--httpcache-prefix` | `HTTPCACHE_PREFIX` | `httpcache` | URL path prefix for the HTTP cache endpoint |
 | `--httpcache-ttl` | `HTTPCACHE_TTL` | `24h` | TTL for cached build artifacts |
 
-Point clients at `http://host/{httpcache-prefix}/`. The prefix lets you run multiple build cache namespaces or use a path expected by a particular tool (e.g. change it to `cache` if a tool hardcodes that path).
+Point clients at `http://host/httpcache/`.
 
 ### Cache Management
 
