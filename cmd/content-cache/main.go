@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	httppprof "net/http/pprof"
+	"net/url"
 	"os"
 	"os/signal"
 	"strings"
@@ -42,12 +43,12 @@ type ServeCmd struct {
 	CredentialsFile  string `kong:"name='credentials-file',env='CREDENTIALS_FILE',type='existingfile',help='Path to credentials template file for upstream auth',group='Auth'"`
 	OIDCPoliciesFile string `kong:"name='oidc-policies',env='OIDC_POLICIES_FILE',type='existingfile',help='Path to OIDC trust policies JSON file (mutually exclusive with --auth-token)',group='Auth'"`
 
-	GoUpstream       string `kong:"name='go-upstream',env='GO_UPSTREAM',help='Upstream Go module proxy URL (default: proxy.golang.org)',group='Upstream'"`
-	NPMUpstream      string `kong:"name='npm-upstream',env='NPM_UPSTREAM',help='Upstream NPM registry URL (default: registry.npmjs.org)',group='Upstream'"`
-	OCIUpstream      string `kong:"name='oci-upstream',env='OCI_UPSTREAM',help='Upstream OCI registry URL (default: registry-1.docker.io)',group='Upstream'"`
-	PyPIUpstream     string `kong:"name='pypi-upstream',env='PYPI_UPSTREAM',help='Upstream PyPI Simple API URL (default: pypi.org/simple/)',group='Upstream'"`
-	MavenUpstream    string `kong:"name='maven-upstream',env='MAVEN_UPSTREAM',help='Upstream Maven repository URL (default: repo.maven.apache.org/maven2)',group='Upstream'"`
-	RubyGemsUpstream string `kong:"name='rubygems-upstream',env='RUBYGEMS_UPSTREAM',help='Upstream RubyGems registry URL (default: rubygems.org)',group='Upstream'"`
+	GoUpstream       string   `kong:"name='go-upstream',env='GO_UPSTREAM',help='Upstream Go module proxy URL (default: proxy.golang.org)',group='Upstream'"`
+	NPMUpstream      string   `kong:"name='npm-upstream',env='NPM_UPSTREAM',help='Upstream NPM registry URL (default: registry.npmjs.org)',group='Upstream'"`
+	OCIUpstream      string   `kong:"name='oci-upstream',env='OCI_UPSTREAM',help='Upstream OCI registry URL (default: registry-1.docker.io)',group='Upstream'"`
+	PyPIUpstream     string   `kong:"name='pypi-upstream',env='PYPI_UPSTREAM',help='Upstream PyPI Simple API URL (default: pypi.org/simple/)',group='Upstream'"`
+	MavenUpstream    []string `kong:"name='maven-upstream',env='MAVEN_UPSTREAM',help='Upstream Maven repository URLs, tried in order on 404 (default: repo.maven.apache.org/maven2). Repeat the flag or pass a comma-separated list to add fallbacks, e.g. --maven-upstream=https://repo.maven.apache.org/maven2,https://repo.clojars.org',group='Upstream'"`
+	RubyGemsUpstream string   `kong:"name='rubygems-upstream',env='RUBYGEMS_UPSTREAM',help='Upstream RubyGems registry URL (default: rubygems.org)',group='Upstream'"`
 
 	GitAllowedHosts       []string `kong:"name='git-allowed-hosts',env='GIT_ALLOWED_HOSTS',help='Comma-separated list of allowed Git upstream hosts (e.g. github.com,gitlab.com)',group='Git'"`
 	GitMaxRequestBodySize int64    `kong:"name='git-max-request-body',default='104857600',env='GIT_MAX_REQUEST_BODY',help='Maximum git-upload-pack request body size in bytes (default: 100MB)',group='Git'"`
@@ -106,6 +107,48 @@ func run() error {
 	default:
 		return fmt.Errorf("unknown command: %s", ctx.Command())
 	}
+}
+
+// Validate runs after kong has populated the struct and before Run. Catching
+// config errors here fails the process before any logger, listener, or
+// database is initialised, and the error is printed by kong against the
+// offending flag instead of being wrapped through server.New.
+//
+// An unset --maven-upstream falls back to the maven package default, so we
+// only validate when the operator explicitly supplied values.
+func (cmd *ServeCmd) Validate() error {
+	seen := make(map[string]struct{}, len(cmd.MavenUpstream))
+	for i, raw := range cmd.MavenUpstream {
+		if err := validateHTTPURL(raw); err != nil {
+			return fmt.Errorf("--maven-upstream[%d]: %w", i, err)
+		}
+		normalized := strings.TrimSuffix(strings.TrimSpace(raw), "/")
+		if _, dup := seen[normalized]; dup {
+			return fmt.Errorf("--maven-upstream[%d]: %q is duplicated; fallback chain has no effect", i, raw)
+		}
+		seen[normalized] = struct{}{}
+	}
+	return nil
+}
+
+// validateHTTPURL reports whether raw is a syntactically valid absolute
+// http(s) URL with a host. It does not reach out to the network.
+func validateHTTPURL(raw string) error {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return fmt.Errorf("URL is empty")
+	}
+	parsed, err := url.Parse(trimmed)
+	if err != nil {
+		return fmt.Errorf("URL %q: %w", raw, err)
+	}
+	if parsed.Scheme != "http" && parsed.Scheme != "https" {
+		return fmt.Errorf("URL %q: scheme must be http or https", raw)
+	}
+	if parsed.Host == "" {
+		return fmt.Errorf("URL %q: missing host", raw)
+	}
+	return nil
 }
 
 func (cmd *ServeCmd) Run() error {
@@ -236,6 +279,7 @@ func (cmd *ServeCmd) Run() error {
 		UpstreamPyPI:          cmd.PyPIUpstream,
 		PyPIMetadataTTL:       cmd.PyPIMetadataTTL,
 		UpstreamMaven:         cmd.MavenUpstream,
+		MavenUserAgent:        fmt.Sprintf("content-cache/%s (+https://github.com/buildkite/content-cache)", version),
 		MavenMetadataTTL:      cmd.MavenMetadataTTL,
 		UpstreamRubyGems:      cmd.RubyGemsUpstream,
 		RubyGemsMetadataTTL:   cmd.RubyGemsMetadataTTL,

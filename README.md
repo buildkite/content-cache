@@ -102,6 +102,12 @@ mvn dependency:get -Dartifact=org.apache.commons:commons-lang3:3.12.0
 # Gradle uses the same Maven repository protocol - no separate handler needed
 ./gradlew build  # Dependencies are cached through the Maven endpoint
 
+# Add Clojars (or any extra Maven-compatible repo) as a fallback upstream.
+# Fetches try each URL in order and fall through on 404, with short-lived
+# negative caching so misses don't repeat on every request.
+content-cache --maven-upstream=https://repo.maven.apache.org/maven2 \
+              --maven-upstream=https://repo.clojars.org
+
 # Configure Bundler to use the cache (global mirror)
 bundle config set --global mirror.https://rubygems.org http://localhost:8080/rubygems/
 
@@ -366,7 +372,7 @@ GitHub Actions — the `id-token: write` permission exposes `ACTIONS_ID_TOKEN_RE
 | `--npm-upstream` | `NPM_UPSTREAM` | `registry.npmjs.org` | Upstream NPM registry URL |
 | `--oci-upstream` | `OCI_UPSTREAM` | `registry-1.docker.io` | Upstream OCI registry URL |
 | `--pypi-upstream` | `PYPI_UPSTREAM` | `pypi.org/simple/` | Upstream PyPI Simple API URL |
-| `--maven-upstream` | `MAVEN_UPSTREAM` | `repo.maven.apache.org/maven2` | Upstream Maven repository URL |
+| `--maven-upstream` | `MAVEN_UPSTREAM` | `repo.maven.apache.org/maven2` | Upstream Maven repository URLs (repeat or comma-separate to add fallbacks, e.g. Clojars) |
 | `--rubygems-upstream` | `RUBYGEMS_UPSTREAM` | `rubygems.org` | Upstream RubyGems registry URL |
 
 ### Fetch Cache Options

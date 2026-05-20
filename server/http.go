@@ -90,8 +90,15 @@ type Config struct {
 	// Default: 5 minutes (new versions may be published)
 	PyPIMetadataTTL time.Duration
 
-	// UpstreamMaven is the upstream Maven repository URL
-	UpstreamMaven string
+	// UpstreamMaven is the ordered list of upstream Maven repository URLs.
+	// Fetches try them in order and fall through on 404 (e.g. Maven Central
+	// then Clojars). Empty falls back to the package default.
+	UpstreamMaven []string
+
+	// MavenUserAgent overrides the User-Agent sent to upstream Maven
+	// repositories. Setting an identifying value (e.g. "content-cache/<version>")
+	// helps avoid being blocklisted by upstream rate-limit heuristics.
+	MavenUserAgent string
 
 	// MavenMetadataTTL is how long to cache maven-metadata.xml.
 	// Default: 5 minutes (new versions may be published)
@@ -525,9 +532,22 @@ func New(cfg Config) (*Server, error) {
 		return nil, fmt.Errorf("creating maven artifact index: %w", err)
 	}
 	mavenIndex := maven.NewIndex(mavenMetadataIndex, mavenArtifactIndex)
-	mavenUpstreamOpts := []maven.UpstreamOption{maven.WithHTTPClient(mavenHTTPClient)}
-	if cfg.UpstreamMaven != "" {
-		mavenUpstreamOpts = append(mavenUpstreamOpts, maven.WithRepositoryURL(cfg.UpstreamMaven))
+	// Persistent negative cache survives restarts: avoids hammering upstreams
+	// with 404 probes for known-missing artifacts (mitigates rate-limit /
+	// blocklisting heuristics on Maven Central).
+	mavenNegCacheIndex, err := metadb.NewEnvelopeIndex(metaDB, "maven", "negcache", maven.DefaultArtifactNegativeCacheTTL, withCodec)
+	if err != nil {
+		return nil, fmt.Errorf("creating maven negative cache index: %w", err)
+	}
+	mavenUpstreamOpts := []maven.UpstreamOption{
+		maven.WithHTTPClient(mavenHTTPClient),
+		maven.WithNegativeCacheStore(mavenNegCacheIndex),
+	}
+	if cfg.MavenUserAgent != "" {
+		mavenUpstreamOpts = append(mavenUpstreamOpts, maven.WithUserAgent(cfg.MavenUserAgent))
+	}
+	if len(cfg.UpstreamMaven) > 0 {
+		mavenUpstreamOpts = append(mavenUpstreamOpts, maven.WithRepositoryURLs(cfg.UpstreamMaven...))
 	}
 	mavenUpstream := maven.NewUpstream(mavenUpstreamOpts...)
 	mavenHandlerOpts := []maven.HandlerOption{
