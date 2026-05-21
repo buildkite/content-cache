@@ -134,6 +134,10 @@ func (a *GitHubAppAuth) installationToken(ctx context.Context, repo RepoRef) (st
 		return "", err
 	}
 
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+
 	now := a.now()
 	a.mu.Lock()
 	if cached, ok := a.tokens[cacheKey]; ok && now.Before(cached.expiresAt.Add(-gitHubAppTokenRefreshSkew)) {
@@ -145,14 +149,18 @@ func (a *GitHubAppAuth) installationToken(ctx context.Context, repo RepoRef) (st
 	ch := a.tokenGroup.DoChan(cacheKey, func() (any, error) {
 		now := a.now()
 		a.mu.Lock()
-		if cached, ok := a.tokens[cacheKey]; ok && now.Before(cached.expiresAt.Add(-gitHubAppTokenRefreshSkew)) {
+		cached, hasCached := a.tokens[cacheKey]
+		if hasCached && now.Before(cached.expiresAt.Add(-gitHubAppTokenRefreshSkew)) {
 			a.mu.Unlock()
 			return cached.token, nil
 		}
 		a.mu.Unlock()
 
-		token, expiresAt, err := a.requestInstallationToken(ctx, repoName, now)
+		token, expiresAt, err := a.requestInstallationToken(context.WithoutCancel(ctx), repoName, now)
 		if err != nil {
+			if hasCached && a.now().Before(cached.expiresAt) {
+				return cached.token, nil
+			}
 			return "", err
 		}
 

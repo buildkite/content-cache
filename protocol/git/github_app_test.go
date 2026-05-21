@@ -12,6 +12,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -191,6 +192,135 @@ func TestGitHubAppAuthMintsDifferentRepoTokensConcurrently(t *testing.T) {
 		passwords = append(passwords, result.password)
 	}
 	require.ElementsMatch(t, []string{"token-one", "token-two"}, passwords)
+}
+
+func TestGitHubAppAuthSharedMintSurvivesLeaderCancellation(t *testing.T) {
+	_, privateKeyPEM := testGitHubAppPrivateKeyPEM(t)
+	now := time.Date(2026, 5, 20, 12, 0, 0, 0, time.UTC)
+
+	requestStarted := make(chan struct{})
+	releaseRequest := make(chan struct{})
+	var requestStartedOnce sync.Once
+	var releaseOnce sync.Once
+	release := func() {
+		releaseOnce.Do(func() {
+			close(releaseRequest)
+		})
+	}
+	defer release()
+
+	var requests atomic.Int32
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		requestStartedOnce.Do(func() {
+			close(requestStarted)
+		})
+		<-releaseRequest
+
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+		_ = json.NewEncoder(w).Encode(gitHubAppTokenResponse{
+			Token:     "token-shared",
+			ExpiresAt: now.Add(time.Hour),
+		})
+	}))
+	t.Cleanup(api.Close)
+
+	auth, err := NewGitHubAppAuth(GitHubAppAuthConfig{
+		AppID:          "12345",
+		InstallationID: "67890",
+		PrivateKey:     privateKeyPEM,
+		TokenScope:     GitHubAppTokenScopeRequestedRepo,
+	}, withGitHubAppAPIURL(api.URL), withGitHubAppClock(func() time.Time { return now }))
+	require.NoError(t, err)
+
+	type authResult struct {
+		password string
+		err      error
+	}
+	leaderResults := make(chan authResult, 1)
+	waiterResults := make(chan authResult, 1)
+
+	leaderCtx, cancelLeader := context.WithCancel(context.Background())
+	defer cancelLeader()
+
+	go func() {
+		_, password, err := auth.BasicAuth(leaderCtx, RepoRef{Host: "github.com", RepoPath: "buildkite/content-cache"})
+		leaderResults <- authResult{password: password, err: err}
+	}()
+
+	select {
+	case <-requestStarted:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for GitHub App token request")
+	}
+
+	go func() {
+		_, password, err := auth.BasicAuth(context.Background(), RepoRef{Host: "github.com", RepoPath: "buildkite/content-cache"})
+		waiterResults <- authResult{password: password, err: err}
+	}()
+
+	cancelLeader()
+	leaderResult := <-leaderResults
+	require.ErrorIs(t, leaderResult.err, context.Canceled)
+
+	release()
+	waiterResult := <-waiterResults
+	require.NoError(t, waiterResult.err)
+	require.Equal(t, "token-shared", waiterResult.password)
+	require.Equal(t, int32(1), requests.Load(), "waiter should share the in-flight token mint, not start a second request")
+}
+
+func TestGitHubAppAuthFallsBackToValidCachedTokenOnRefreshFailure(t *testing.T) {
+	_, privateKeyPEM := testGitHubAppPrivateKeyPEM(t)
+	now := time.Date(2026, 5, 20, 12, 0, 0, 0, time.UTC)
+
+	var requests atomic.Int32
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch requests.Add(1) {
+		case 1:
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusCreated)
+			_ = json.NewEncoder(w).Encode(gitHubAppTokenResponse{
+				Token:     "token-cached",
+				ExpiresAt: now.Add(2 * time.Minute),
+			})
+		case 2:
+			http.Error(w, "temporary github outage", http.StatusServiceUnavailable)
+		case 3:
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusCreated)
+			_ = json.NewEncoder(w).Encode(gitHubAppTokenResponse{
+				Token:     "token-refreshed",
+				ExpiresAt: now.Add(time.Hour),
+			})
+		default:
+			t.Errorf("unexpected token request %d", requests.Load())
+			http.Error(w, "unexpected token request", http.StatusInternalServerError)
+		}
+	}))
+	t.Cleanup(api.Close)
+
+	auth, err := NewGitHubAppAuth(GitHubAppAuthConfig{
+		AppID:          "12345",
+		InstallationID: "67890",
+		PrivateKey:     privateKeyPEM,
+		TokenScope:     GitHubAppTokenScopeRequestedRepo,
+	}, withGitHubAppAPIURL(api.URL), withGitHubAppClock(func() time.Time { return now }))
+	require.NoError(t, err)
+
+	_, password, err := auth.BasicAuth(context.Background(), RepoRef{Host: "github.com", RepoPath: "buildkite/content-cache"})
+	require.NoError(t, err)
+	require.Equal(t, "token-cached", password)
+
+	_, password, err = auth.BasicAuth(context.Background(), RepoRef{Host: "github.com", RepoPath: "buildkite/content-cache"})
+	require.NoError(t, err)
+	require.Equal(t, "token-cached", password)
+
+	_, password, err = auth.BasicAuth(context.Background(), RepoRef{Host: "github.com", RepoPath: "buildkite/content-cache"})
+	require.NoError(t, err)
+	require.Equal(t, "token-refreshed", password)
+	require.Equal(t, int32(3), requests.Load())
 }
 
 func TestGitHubAppAuthRejectsNonGitHubRepo(t *testing.T) {
