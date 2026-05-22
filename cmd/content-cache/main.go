@@ -80,9 +80,7 @@ type ServeCmd struct {
 
 	PprofAddress string `kong:"name='pprof-address',env='PPROF_ADDRESS',help='Address for pprof HTTP server (e.g., localhost:6060); disabled if empty',group='Debug'"`
 
-	MetricsOTLPEndpoint string        `kong:"name='metrics-otlp-endpoint',env='METRICS_OTLP_ENDPOINT',help='OTLP gRPC endpoint for metrics (e.g., localhost:4317)',group='Metrics'"`
-	MetricsPrometheus   bool          `kong:"name='metrics-prometheus',env='METRICS_PROMETHEUS',help='Enable Prometheus /metrics endpoint',group='Metrics'"`
-	MetricsInterval     time.Duration `kong:"name='metrics-interval',default='10s',env='METRICS_INTERVAL',help='Metrics export interval',group='Metrics'"`
+	MetricsPrometheus bool `kong:"name='metrics-prometheus',env='METRICS_PROMETHEUS',help='Enable Prometheus /metrics endpoint. OTLP export is configured via the standard OTEL_EXPORTER_OTLP_* environment variables.',group='Metrics'"`
 }
 
 func main() {
@@ -189,20 +187,17 @@ func (cmd *ServeCmd) Run() error {
 	}
 	logger := slog.New(handler)
 
-	// Initialize metrics
 	metricsCfg := telemetry.MetricsConfig{
 		ServiceName:      "content-cache",
-		ServiceVersion:   "0.1.0",
-		OTLPEndpoint:     cmd.MetricsOTLPEndpoint,
+		ServiceVersion:   version,
 		EnablePrometheus: cmd.MetricsPrometheus,
-		FlushInterval:    cmd.MetricsInterval,
 	}
 	metricsShutdown, err := telemetry.InitMetrics(context.Background(), metricsCfg)
 	if err != nil {
 		return fmt.Errorf("initializing metrics: %w", err)
 	}
-	if cmd.MetricsOTLPEndpoint != "" {
-		logger.Info("metrics OTLP export enabled", "endpoint", cmd.MetricsOTLPEndpoint)
+	if endpoint := otlpEndpointEnv(); endpoint != "" {
+		logger.Info("metrics OTLP export enabled", "endpoint", endpoint, "protocol", otlpProtocolEnv())
 	}
 	if cmd.MetricsPrometheus {
 		logger.Info("metrics Prometheus endpoint enabled", "path", "/metrics")
@@ -379,4 +374,21 @@ func (cmd *ServeCmd) Run() error {
 		_ = metricsShutdown(metricsCtx)
 		return err
 	}
+}
+
+func otlpEndpointEnv() string {
+	if v := os.Getenv("OTEL_EXPORTER_OTLP_METRICS_ENDPOINT"); v != "" {
+		return v
+	}
+	return os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT")
+}
+
+func otlpProtocolEnv() string {
+	if v := os.Getenv("OTEL_EXPORTER_OTLP_METRICS_PROTOCOL"); v != "" {
+		return v
+	}
+	if v := os.Getenv("OTEL_EXPORTER_OTLP_PROTOCOL"); v != "" {
+		return v
+	}
+	return "http/protobuf"
 }

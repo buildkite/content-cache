@@ -11,6 +11,8 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
+	"go.opentelemetry.io/otel/sdk/resource"
+	semconv "go.opentelemetry.io/otel/semconv/v1.40.0"
 )
 
 // setupTestMetrics creates a Metrics instance backed by a ManualReader for testing.
@@ -257,4 +259,85 @@ func TestStatusClass(t *testing.T) {
 	for _, tt := range tests {
 		require.Equal(t, tt.want, StatusClass(tt.status), "StatusClass(%d)", tt.status)
 	}
+}
+
+func TestOTLPExportEnabled(t *testing.T) {
+	t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "")
+	t.Setenv("OTEL_EXPORTER_OTLP_METRICS_ENDPOINT", "")
+	require.False(t, otlpExportEnabled(), "no env vars set")
+
+	t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://otel:4318")
+	require.True(t, otlpExportEnabled(), "general endpoint set")
+
+	t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "")
+	t.Setenv("OTEL_EXPORTER_OTLP_METRICS_ENDPOINT", "http://otel:4318/v1/metrics")
+	require.True(t, otlpExportEnabled(), "metrics-specific endpoint set")
+}
+
+func TestOTLPProtocol(t *testing.T) {
+	tests := []struct {
+		name    string
+		general string
+		metrics string
+		want    string
+	}{
+		{"default", "", "", "http/protobuf"},
+		{"general grpc", "grpc", "", "grpc"},
+		{"general http", "http/protobuf", "", "http/protobuf"},
+		{"metrics overrides general", "grpc", "http/protobuf", "http/protobuf"},
+		{"metrics only", "", "grpc", "grpc"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv("OTEL_EXPORTER_OTLP_PROTOCOL", tt.general)
+			t.Setenv("OTEL_EXPORTER_OTLP_METRICS_PROTOCOL", tt.metrics)
+			require.Equal(t, tt.want, otlpProtocol())
+		})
+	}
+}
+
+func TestNewOTLPReaderUnsupportedProtocol(t *testing.T) {
+	t.Setenv("OTEL_EXPORTER_OTLP_PROTOCOL", "http/json")
+	t.Setenv("OTEL_EXPORTER_OTLP_METRICS_PROTOCOL", "")
+	_, err := newOTLPReader(context.Background())
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "http/json")
+}
+
+func TestBuildResourceFallbackAppliedWhenBaseEmpty(t *testing.T) {
+	// Simulate a base resource that only carries the SDK's placeholder
+	// service.name (no OTEL_SERVICE_NAME / OTEL_RESOURCE_ATTRIBUTES set).
+	base := resource.NewSchemaless(semconv.ServiceName("unknown_service:telemetry.test"))
+
+	res, err := buildResourceFrom(base, MetricsConfig{ServiceName: "fallback-svc", ServiceVersion: "9.9.9"})
+	require.NoError(t, err)
+
+	name, ok := lookupAttr(res.Attributes(), "service.name")
+	require.True(t, ok)
+	require.Equal(t, "fallback-svc", name)
+
+	version, ok := lookupAttr(res.Attributes(), "service.version")
+	require.True(t, ok)
+	require.Equal(t, "9.9.9", version)
+}
+
+func TestBuildResourceEnvWinsOverFallback(t *testing.T) {
+	// Simulate a base resource populated by OTEL_SERVICE_NAME.
+	base := resource.NewSchemaless(semconv.ServiceName("env-svc"))
+
+	res, err := buildResourceFrom(base, MetricsConfig{ServiceName: "fallback-svc"})
+	require.NoError(t, err)
+
+	name, ok := lookupAttr(res.Attributes(), "service.name")
+	require.True(t, ok)
+	require.Equal(t, "env-svc", name, "env-derived service.name must win over the fallback")
+}
+
+func lookupAttr(attrs []attribute.KeyValue, key string) (string, bool) {
+	for _, a := range attrs {
+		if string(a.Key) == key {
+			return a.Value.AsString(), true
+		}
+	}
+	return "", false
 }

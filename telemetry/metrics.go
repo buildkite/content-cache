@@ -2,8 +2,11 @@ package telemetry
 
 import (
 	"context"
+	"fmt"
 	"net/http"
+	"os"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -11,6 +14,7 @@ import (
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetricgrpc"
+	"go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetrichttp"
 	promexporter "go.opentelemetry.io/otel/exporters/prometheus"
 	"go.opentelemetry.io/otel/metric"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
@@ -23,23 +27,14 @@ const (
 	meterName = "github.com/buildkite/content-cache"
 )
 
-// MetricsConfig configures the metrics system.
+// MetricsConfig configures the metrics system. OTLP transport is driven by
+// the standard OTEL_* environment variables (see README); ServiceName and
+// ServiceVersion are used only as fallbacks when the corresponding env vars
+// are not set.
 type MetricsConfig struct {
-	// ServiceName is the name of the service for resource attributes.
-	ServiceName string
-
-	// ServiceVersion is the version of the service.
-	ServiceVersion string
-
-	// OTLPEndpoint is the OTLP gRPC endpoint (e.g., "localhost:4317").
-	// If empty, OTLP export is disabled.
-	OTLPEndpoint string
-
-	// EnablePrometheus enables the Prometheus /metrics endpoint.
+	ServiceName      string
+	ServiceVersion   string
 	EnablePrometheus bool
-
-	// FlushInterval is how often to export metrics (default: 10s).
-	FlushInterval time.Duration
 }
 
 // Metrics holds the OpenTelemetry metric instruments.
@@ -112,22 +107,7 @@ func InitMetrics(ctx context.Context, cfg MetricsConfig) (shutdown func(context.
 }
 
 func doInitMetrics(ctx context.Context, cfg MetricsConfig) error {
-	if cfg.ServiceName == "" {
-		cfg.ServiceName = "content-cache"
-	}
-	if cfg.FlushInterval == 0 {
-		cfg.FlushInterval = 10 * time.Second
-	}
-
-	// Build resource with service info
-	res, err := resource.Merge(
-		resource.Default(),
-		resource.NewWithAttributes(
-			semconv.SchemaURL,
-			semconv.ServiceName(cfg.ServiceName),
-			semconv.ServiceVersion(cfg.ServiceVersion),
-		),
-	)
+	res, err := buildResource(cfg)
 	if err != nil {
 		return err
 	}
@@ -135,21 +115,14 @@ func doInitMetrics(ctx context.Context, cfg MetricsConfig) error {
 	var readers []sdkmetric.Reader
 	var promHandler http.Handler
 
-	// Setup OTLP exporter if endpoint configured
-	if cfg.OTLPEndpoint != "" {
-		otlpExporter, err := otlpmetricgrpc.New(ctx,
-			otlpmetricgrpc.WithEndpoint(cfg.OTLPEndpoint),
-			otlpmetricgrpc.WithInsecure(), // Use WithTLSCredentials for production
-		)
+	if otlpExportEnabled() {
+		otlpReader, err := newOTLPReader(ctx)
 		if err != nil {
 			return err
 		}
-		readers = append(readers, sdkmetric.NewPeriodicReader(otlpExporter,
-			sdkmetric.WithInterval(cfg.FlushInterval),
-		))
+		readers = append(readers, otlpReader)
 	}
 
-	// Setup Prometheus exporter if enabled
 	if cfg.EnablePrometheus {
 		promExp, err := promexporter.New()
 		if err != nil {
@@ -161,9 +134,7 @@ func doInitMetrics(ctx context.Context, cfg MetricsConfig) error {
 
 	// If no exporters configured, use a no-op periodic reader to still collect metrics
 	if len(readers) == 0 {
-		readers = append(readers, sdkmetric.NewPeriodicReader(noopExporter{},
-			sdkmetric.WithInterval(cfg.FlushInterval),
-		))
+		readers = append(readers, sdkmetric.NewPeriodicReader(noopExporter{}))
 	}
 
 	// Build meter provider options
@@ -540,6 +511,106 @@ func shutdownMetrics(ctx context.Context) error {
 	err := globalMetrics.meterProvider.Shutdown(ctx)
 	globalMetrics = nil
 	return err
+}
+
+func buildResource(cfg MetricsConfig) (*resource.Resource, error) {
+	return buildResourceFrom(resource.Default(), cfg)
+}
+
+// buildResourceFrom is split from buildResource so tests can supply a base
+// resource — resource.Default() is a process-wide cached singleton.
+func buildResourceFrom(base *resource.Resource, cfg MetricsConfig) (*resource.Resource, error) {
+	var fallbackAttrs []attribute.KeyValue
+	if cfg.ServiceName != "" && !hasResourceAttr(base, "service.name") {
+		fallbackAttrs = append(fallbackAttrs, semconv.ServiceName(cfg.ServiceName))
+	}
+	if cfg.ServiceVersion != "" && !hasResourceAttr(base, "service.version") {
+		fallbackAttrs = append(fallbackAttrs, semconv.ServiceVersion(cfg.ServiceVersion))
+	}
+	if len(fallbackAttrs) == 0 {
+		return base, nil
+	}
+	return resource.Merge(base, resource.NewWithAttributes(semconv.SchemaURL, fallbackAttrs...))
+}
+
+// hasResourceAttr reports whether the resource has a real value for key.
+// The SDK seeds service.name with "unknown_service:<binary>" when neither
+// OTEL_SERVICE_NAME nor OTEL_RESOURCE_ATTRIBUTES sets it; that placeholder
+// is treated as absent so the configured fallback can take over.
+func hasResourceAttr(r *resource.Resource, key string) bool {
+	for _, a := range r.Attributes() {
+		if string(a.Key) != key {
+			continue
+		}
+		v := a.Value.AsString()
+		if key == "service.name" && strings.HasPrefix(v, "unknown_service:") {
+			return false
+		}
+		return v != ""
+	}
+	return false
+}
+
+func otlpExportEnabled() bool {
+	return os.Getenv("OTEL_EXPORTER_OTLP_METRICS_ENDPOINT") != "" ||
+		os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT") != ""
+}
+
+func otlpProtocol() string {
+	if p := os.Getenv("OTEL_EXPORTER_OTLP_METRICS_PROTOCOL"); p != "" {
+		return p
+	}
+	if p := os.Getenv("OTEL_EXPORTER_OTLP_PROTOCOL"); p != "" {
+		return p
+	}
+	return "http/protobuf"
+}
+
+// newOTLPReader constructs a PeriodicReader backed by an OTLP exporter
+// whose transport (gRPC vs HTTP/protobuf) is chosen by otlpProtocol().
+//
+// The underlying exporter is intentionally created with zero options. When
+// called this way, otlpmetricgrpc.New / otlpmetrichttp.New auto-configure
+// themselves from the standard OTel env vars, including:
+//
+//   - OTEL_EXPORTER_OTLP_ENDPOINT, OTEL_EXPORTER_OTLP_METRICS_ENDPOINT
+//   - OTEL_EXPORTER_OTLP_INSECURE, OTEL_EXPORTER_OTLP_METRICS_INSECURE
+//   - OTEL_EXPORTER_OTLP_HEADERS, OTEL_EXPORTER_OTLP_METRICS_HEADERS
+//   - OTEL_EXPORTER_OTLP_COMPRESSION, OTEL_EXPORTER_OTLP_METRICS_COMPRESSION
+//   - OTEL_EXPORTER_OTLP_TIMEOUT, OTEL_EXPORTER_OTLP_METRICS_TIMEOUT
+//   - OTEL_EXPORTER_OTLP_CERTIFICATE, OTEL_EXPORTER_OTLP_CLIENT_CERTIFICATE,
+//     OTEL_EXPORTER_OTLP_CLIENT_KEY (and their _METRICS_ variants for mTLS)
+//
+// Passing any explicit option to New() (e.g. WithEndpoint) would NOT merge
+// with env-derived defaults — it would replace them — so adding even one
+// option here silently disables env-based configuration of every other
+// setting. That was the bug in the previous implementation: it set
+// WithEndpoint + WithInsecure and made OTEL_EXPORTER_OTLP_HEADERS, _TIMEOUT,
+// _COMPRESSION, mTLS, etc. unreachable. Keep the call optionless.
+//
+// Protocol selection is handled here rather than by the SDK because Go's
+// OTel exporters live in two separate packages (otlpmetricgrpc,
+// otlpmetrichttp) and the SDK does not auto-dispatch between them based on
+// OTEL_EXPORTER_OTLP_PROTOCOL. The caller must pick.
+//
+// PeriodicReader is likewise constructed with zero options so it reads
+// OTEL_METRIC_EXPORT_INTERVAL.
+func newOTLPReader(ctx context.Context) (sdkmetric.Reader, error) {
+	var exporter sdkmetric.Exporter
+	var err error
+
+	switch p := otlpProtocol(); p {
+	case "grpc":
+		exporter, err = otlpmetricgrpc.New(ctx)
+	case "http/protobuf":
+		exporter, err = otlpmetrichttp.New(ctx)
+	default:
+		return nil, fmt.Errorf("unsupported OTEL_EXPORTER_OTLP_PROTOCOL %q (supported: grpc, http/protobuf)", p)
+	}
+	if err != nil {
+		return nil, err
+	}
+	return sdkmetric.NewPeriodicReader(exporter), nil
 }
 
 // RecordHTTP records HTTP request metrics.

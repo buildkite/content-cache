@@ -456,11 +456,27 @@ Point clients at `http://host/httpcache/`.
 
 ### Metrics Options
 
+The Prometheus `/metrics` endpoint is controlled by a flag. OTLP export is configured entirely via the [standard OpenTelemetry environment variables](https://opentelemetry.io/docs/specs/otel/protocol/exporter/) so content-cache behaves like any other OTel-instrumented application — and so the OpenTelemetry Operator's `instrumentation.opentelemetry.io/inject-sdk` annotation works out of the box.
+
 | Flag | Environment Variable | Default | Description |
 |------|---------------------|---------|-------------|
-| `--metrics-otlp-endpoint` | `METRICS_OTLP_ENDPOINT` | | OTLP gRPC endpoint (e.g., `localhost:4317`) |
 | `--metrics-prometheus` | `METRICS_PROMETHEUS` | `false` | Enable Prometheus `/metrics` endpoint |
-| `--metrics-interval` | `METRICS_INTERVAL` | `10s` | Metrics export interval |
+
+**OTLP export** is enabled iff one of `OTEL_EXPORTER_OTLP_ENDPOINT` or `OTEL_EXPORTER_OTLP_METRICS_ENDPOINT` is set. Supported env vars (see the [OTLP exporter spec](https://opentelemetry.io/docs/specs/otel/protocol/exporter/) for full semantics):
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `OTEL_SERVICE_NAME` | `content-cache` | Service name resource attribute |
+| `OTEL_RESOURCE_ATTRIBUTES` | | Additional resource attributes (e.g., `k8s.namespace.name=...`) |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | | OTLP endpoint URL (applies to all signals) |
+| `OTEL_EXPORTER_OTLP_METRICS_ENDPOINT` | | Metrics-specific OTLP endpoint (wins over the general one) |
+| `OTEL_EXPORTER_OTLP_PROTOCOL` | `http/protobuf` | Transport: `grpc` or `http/protobuf` |
+| `OTEL_EXPORTER_OTLP_METRICS_PROTOCOL` | | Metrics-specific protocol (wins over the general one) |
+| `OTEL_EXPORTER_OTLP_HEADERS` | | Comma-separated `key=value` headers (e.g., auth tokens) |
+| `OTEL_EXPORTER_OTLP_INSECURE` | `false` | Disable TLS for the OTLP connection |
+| `OTEL_EXPORTER_OTLP_COMPRESSION` | | `gzip` to enable compression |
+| `OTEL_EXPORTER_OTLP_TIMEOUT` | `10000` | Per-export timeout in milliseconds |
+| `OTEL_METRIC_EXPORT_INTERVAL` | `60000` | Export interval in milliseconds |
 
 ### Debug Options
 
