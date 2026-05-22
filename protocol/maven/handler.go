@@ -328,6 +328,7 @@ func (h *Handler) handleMetadata(w http.ResponseWriter, r *http.Request, groupID
 
 	w.Header().Set("Content-Type", "application/xml")
 	if r.Method != http.MethodHead {
+		// #nosec G705 -- proxied Maven metadata served as application/xml, not HTML
 		if _, err := w.Write(rawMeta); err != nil {
 			logger.Error("failed to write response", "error", err)
 		}
@@ -683,6 +684,7 @@ func (h *Handler) handleArtifactChecksum(w http.ResponseWriter, r *http.Request,
 
 	w.Header().Set("Content-Type", "text/plain")
 	if r.Method != http.MethodHead {
+		// #nosec G705 -- proxied upstream checksum served as text/plain, not HTML
 		if _, err := w.Write([]byte(checksum)); err != nil {
 			logger.Error("failed to write response", "error", err)
 		}

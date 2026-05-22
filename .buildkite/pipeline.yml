@@ -1,31 +1,6 @@
 image: "buildkite/hosted-agent-base-images:ubuntu-jammy"
 
 steps:
-  - if: build.branch == "main"
-    if_changed: ".buildkite/Dockerfile.build"
-    key: base_image
-    image: "buildkite/hosted-agent-base-images:ubuntu-jammy"
-    label: ":docker: Create base image"
-    command: |
-      docker build \
-        --no-cache \
-        --file .buildkite/Dockerfile.build \
-        --tag "${BUILDKITE_HOSTED_REGISTRY_URL}/content_cache_base:latest" \
-        --progress plain \
-        --push .
-
-  - if: build.branch != "main"
-    if_changed: ".buildkite/Dockerfile.build"
-    key: base_image_check
-    image: "buildkite/hosted-agent-base-images:ubuntu-jammy"
-    label: ":docker: Check base image"
-    command: |
-      docker build \
-        --no-cache \
-        --file .buildkite/Dockerfile.build \
-        --tag "${BUILDKITE_HOSTED_REGISTRY_URL}/content_cache_base:dev" \
-        --progress plain .
-
   - group: ":mag: QA"
     key: quality_checks
     steps:
