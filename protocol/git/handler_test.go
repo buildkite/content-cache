@@ -88,6 +88,27 @@ func TestParseGitPath(t *testing.T) {
 			wantAction: "git-receive-pack",
 		},
 		{
+			name:       "simple repo",
+			path:       "/github.com/user/repo/info/refs",
+			wantHost:   "github.com",
+			wantRepo:   "user/repo",
+			wantAction: "info/refs",
+		},
+		{
+			name:       "multi-segment GitLab path",
+			path:       "/gitlab.com/group/sub/repo/git-upload-pack",
+			wantHost:   "gitlab.com",
+			wantRepo:   "group/sub/repo",
+			wantAction: "git-upload-pack",
+		},
+		{
+			name:       "git-receive-pack action",
+			path:       "/github.com/user/repo/git-receive-pack",
+			wantHost:   "github.com",
+			wantRepo:   "user/repo",
+			wantAction: "git-receive-pack",
+		},
+		{
 			name:    "path traversal",
 			path:    "/github.com/../etc/passwd.git/info/refs",
 			wantErr: true,
@@ -95,11 +116,6 @@ func TestParseGitPath(t *testing.T) {
 		{
 			name:    "empty segments",
 			path:    "/github.com//repo.git/info/refs",
-			wantErr: true,
-		},
-		{
-			name:    "missing .git",
-			path:    "/github.com/user/repo/info/refs",
 			wantErr: true,
 		},
 		{

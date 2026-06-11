@@ -114,9 +114,12 @@ type gitPathResult struct {
 }
 
 // parseGitPath extracts the repository reference and action from a request path.
-// Expected format: /{host}/{repoPath}.git/{action}
+// The trailing ".git" on the repository is optional.
+// Expected format: /{host}/{repoPath}[.git]/{action}
 // Example: /github.com/user/repo.git/info/refs
+// Example: /github.com/user/repo/info/refs
 // Example: /gitlab.com/group/sub/repo.git/git-upload-pack
+// Example: /gitlab.com/group/sub/repo/git-upload-pack
 func parseGitPath(path string) (*gitPathResult, error) {
 	// Remove leading slash
 	path = strings.TrimPrefix(path, "/")
@@ -131,14 +134,22 @@ func parseGitPath(path string) (*gitPathResult, error) {
 		}
 	}
 
-	// Find .git/ separator
-	repoSection, action, found := strings.Cut(path, ".git/")
-	if !found {
-		return nil, fmt.Errorf("missing .git/ in path")
+	// Identify the action from its known suffix. Everything before it is the
+	// repository section, which may or may not carry a trailing ".git".
+	var action, repoSection string
+	switch {
+	case strings.HasSuffix(path, "/info/refs"):
+		action, repoSection = "info/refs", strings.TrimSuffix(path, "/info/refs")
+	case strings.HasSuffix(path, "/git-upload-pack"):
+		action, repoSection = "git-upload-pack", strings.TrimSuffix(path, "/git-upload-pack")
+	case strings.HasSuffix(path, "/git-receive-pack"):
+		action, repoSection = "git-receive-pack", strings.TrimSuffix(path, "/git-receive-pack")
+	default:
+		return nil, fmt.Errorf("unknown action")
 	}
 
-	// Trim trailing dot if present (e.g., "repo." from "repo.git/")
-	repoSection = strings.TrimSuffix(repoSection, ".")
+	// Trim the optional ".git" suffix from the repository section.
+	repoSection = strings.TrimSuffix(repoSection, ".git")
 
 	// Split into host and repo path
 	host, repoPath, found := strings.Cut(repoSection, "/")
@@ -148,14 +159,6 @@ func parseGitPath(path string) (*gitPathResult, error) {
 
 	if host == "" || repoPath == "" {
 		return nil, fmt.Errorf("empty host or repository path")
-	}
-
-	// Validate action
-	switch action {
-	case "info/refs", "git-upload-pack", "git-receive-pack":
-		// valid
-	default:
-		return nil, fmt.Errorf("unknown action: %s", action)
 	}
 
 	return &gitPathResult{
