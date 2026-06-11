@@ -5,6 +5,7 @@ import (
 	"compress/gzip"
 	"context"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -644,6 +645,206 @@ func TestHandlerStaleCacheEviction(t *testing.T) {
 	h.ServeHTTP(w2, req2)
 	require.Equal(t, http.StatusOK, w2.Code)
 	require.Equal(t, firstBody, w2.Body.String())
+}
+
+// pktLine encodes s as a git pkt-line: a 4-hex-digit length prefix covering the
+// prefix itself plus the payload, followed by the payload.
+func pktLine(s string) string {
+	return fmt.Sprintf("%04x%s", len(s)+4, s)
+}
+
+const (
+	flushPkt = "0000"
+	delimPkt = "0001"
+)
+
+func TestIsLsRefs(t *testing.T) {
+	tests := []struct {
+		name    string
+		body    string
+		want    bool
+		wantErr bool
+	}{
+		{
+			name: "ls-refs command only",
+			body: pktLine("command=ls-refs\n"),
+			want: true,
+		},
+		{
+			name: "ls-refs with capabilities, delimiter and args",
+			body: pktLine("command=ls-refs\n") +
+				pktLine("object-format=sha1\n") +
+				delimPkt +
+				pktLine("peel\n") +
+				pktLine("ref-prefix HEAD\n") +
+				flushPkt,
+			want: true,
+		},
+		{
+			name: "ls-refs preceded by control packets",
+			body: flushPkt + delimPkt + pktLine("command=ls-refs\n"),
+			want: true,
+		},
+		{
+			name: "fetch command is not ls-refs",
+			body: pktLine("command=fetch\n") +
+				pktLine("object-format=sha1\n") +
+				delimPkt +
+				pktLine("want 0123456789012345678901234567890123456789\n") +
+				flushPkt,
+			want: false,
+		},
+		{
+			name: "v1-style want/done body has no command",
+			body: pktLine("want 0123456789012345678901234567890123456789\n") +
+				flushPkt +
+				pktLine("done\n"),
+			want: false,
+		},
+		{
+			name: "empty body",
+			body: "",
+			want: false,
+		},
+		{
+			name: "only a flush packet",
+			body: flushPkt,
+			want: false,
+		},
+		{
+			name:    "malformed packet length below minimum",
+			body:    "0003",
+			wantErr: true,
+		},
+		{
+			name:    "invalid hex length",
+			body:    "zzzzcommand=ls-refs\n",
+			wantErr: true,
+		},
+		{
+			name: "truncated packet is treated as not ls-refs",
+			body: "0050command=ls-refs\n", // declares 0x50 bytes but the body is far shorter
+			want: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := isLsRefs(strings.NewReader(tt.body))
+			if tt.wantErr {
+				require.Error(t, err)
+				return
+			}
+			require.NoError(t, err)
+			require.Equal(t, tt.want, got)
+		})
+	}
+}
+
+func TestIsLsRefsResetsPosition(t *testing.T) {
+	body := pktLine("command=ls-refs\n") + flushPkt
+	r := strings.NewReader(body)
+
+	got, err := isLsRefs(r)
+	require.NoError(t, err)
+	require.True(t, got)
+
+	rest, err := io.ReadAll(r)
+	require.NoError(t, err)
+	require.Equal(t, body, string(rest), "body must be readable from the start after isLsRefs")
+}
+
+func TestIsLsRefsSeeksToStartBeforeScanning(t *testing.T) {
+	body := pktLine("command=ls-refs\n")
+	r := strings.NewReader(body)
+
+	_, err := r.Seek(4, io.SeekStart)
+	require.NoError(t, err)
+
+	got, err := isLsRefs(r)
+	require.NoError(t, err)
+	require.True(t, got)
+}
+
+// countingUploadPackUpstream returns a test server that records every
+// git-upload-pack request body and responds with a fake pack.
+func countingUploadPackUpstream(fetchCount *atomic.Int32, lastBody *[]byte) *httptest.Server {
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost && strings.Contains(r.URL.Path, "/git-upload-pack") {
+			fetchCount.Add(1)
+			if b, err := io.ReadAll(r.Body); err == nil {
+				*lastBody = b
+			}
+			w.Header().Set("Content-Type", ContentTypeUploadPackResult)
+			_, _ = w.Write([]byte(fakeUploadPackBody))
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+}
+
+func TestHandlerUploadPackLsRefsBypassesCache(t *testing.T) {
+	var fetchCount atomic.Int32
+	var lastBody []byte
+	upstreamSrv := countingUploadPackUpstream(&fetchCount, &lastBody)
+	defer upstreamSrv.Close()
+
+	h, cleanup := newTestHandlerWithTransport(t, upstreamSrv)
+	defer cleanup()
+
+	body := []byte(pktLine("command=ls-refs\n") +
+		pktLine("object-format=sha1\n") +
+		delimPkt +
+		pktLine("peel\n") +
+		pktLine("ref-prefix HEAD\n") +
+		flushPkt)
+
+	for i := range 2 {
+		req := httptest.NewRequest(http.MethodPost, "/github.com/user/repo.git/git-upload-pack", bytes.NewReader(body))
+		req.Header.Set("Content-Type", ContentTypeUploadPackRequest)
+		req.Header.Set("Git-Protocol", "version=2")
+		w := httptest.NewRecorder()
+
+		h.ServeHTTP(w, req)
+
+		require.Equal(t, http.StatusOK, w.Code, "request %d", i)
+		require.Equal(t, ContentTypeUploadPackResult, w.Header().Get("Content-Type"))
+		require.Equal(t, fakeUploadPackBody, w.Body.String())
+	}
+
+	require.Equal(t, int32(2), fetchCount.Load(), "ls-refs must reach upstream on every request and never be cached")
+	require.Equal(t, body, lastBody, "the full ls-refs body must be forwarded to upstream")
+}
+
+func TestHandlerUploadPackLsRefsGzip(t *testing.T) {
+	var fetchCount atomic.Int32
+	var lastBody []byte
+	upstreamSrv := countingUploadPackUpstream(&fetchCount, &lastBody)
+	defer upstreamSrv.Close()
+
+	h, cleanup := newTestHandlerWithTransport(t, upstreamSrv)
+	defer cleanup()
+
+	plain := []byte(pktLine("command=ls-refs\n") + flushPkt)
+
+	var gzBuf bytes.Buffer
+	gz := gzip.NewWriter(&gzBuf)
+	_, err := gz.Write(plain)
+	require.NoError(t, err)
+	require.NoError(t, gz.Close())
+
+	req := httptest.NewRequest(http.MethodPost, "/github.com/user/repo.git/git-upload-pack", bytes.NewReader(gzBuf.Bytes()))
+	req.Header.Set("Content-Type", ContentTypeUploadPackRequest)
+	req.Header.Set("Content-Encoding", "gzip")
+	req.Header.Set("Git-Protocol", "version=2")
+	w := httptest.NewRecorder()
+
+	h.ServeHTTP(w, req)
+
+	require.Equal(t, http.StatusOK, w.Code)
+	require.Equal(t, fakeUploadPackBody, w.Body.String())
+	require.Equal(t, int32(1), fetchCount.Load())
+	require.Equal(t, plain, lastBody, "the decompressed ls-refs body must be forwarded to upstream")
 }
 
 // newTestHandlerWithTransport creates a test handler that redirects all HTTPS

@@ -376,6 +376,35 @@ func (h *Handler) handleUploadPack(w http.ResponseWriter, r *http.Request, repo 
 		}
 	}
 
+	// In the git v2 wire protocol `ls-refs` is passed to the git-upload-pack endpoint.
+	// This type of request cannot be cached, as it is backed by mutable refs upstream.
+	isLsRefs, lsRefsErr := isLsRefs(activeBodyFile)
+	if lsRefsErr != nil {
+		logger.Error("failed to check if git command includes ls-refs", "error", lsRefsErr)
+	} else if isLsRefs {
+		telemetry.SetCacheResult(r, telemetry.CacheBypass)
+
+		upstream := h.router.Match(repo)
+		rc, err := upstream.FetchUploadPack(ctx, repo, gitProtocol, activeBodyFile)
+		_ = activeBodyFile.Close()
+		if errors.Is(err, ErrNotFound) {
+			http.Error(w, "repository not found", http.StatusNotFound)
+			return
+		}
+		if err != nil {
+			logger.Error("upstream git-upload-pack ls-refs failed", "error", err)
+			http.Error(w, "upstream error", http.StatusBadGateway)
+			return
+		}
+		defer func() { _ = rc.Close() }()
+
+		w.Header().Set("Content-Type", ContentTypeUploadPackResult)
+		if _, err := io.Copy(w, rc); err != nil {
+			logger.Error("failed to stream git-upload-pack ls-refs response", "error", err)
+		}
+		return
+	}
+
 	// Check cache
 	cached, err := h.index.GetCachedPack(ctx, cacheKey)
 	if err == nil {
@@ -615,4 +644,50 @@ func parseHexLen(s string) (int, error) {
 		return 0, fmt.Errorf("invalid hex length %q: %w", s, err)
 	}
 	return int(n), nil
+}
+
+// isLsRefs determines if a particular request is a ls-refs command.
+//
+// The output of ls-refs commands change as the upstream updates,
+// and so they cannot be cached in the same way a normal git-upload-pack request can be.
+func isLsRefs(activeBody io.ReadSeeker) (bool, error) {
+	if _, err := activeBody.Seek(0, io.SeekStart); err != nil {
+		return false, err
+	}
+	defer func() { _, _ = activeBody.Seek(0, io.SeekStart) }()
+
+	body, err := io.ReadAll(io.LimitReader(activeBody, maxLsRefsScanSize))
+	if err != nil {
+		return false, err
+	}
+
+	pos := 0
+	for pos+4 <= len(body) {
+		pktLen, err := parseHexLen(string(body[pos : pos+4]))
+		if err != nil {
+			return false, err
+		}
+		if pktLen == 0 || pktLen == 1 {
+			// pktLen == 0 -> flush packet
+			// pktLen == 1 -> delimiter packet
+			// in both cases, they are just special control packets
+			pos += 4
+			continue
+		}
+		if pktLen < 4 {
+			return false, fmt.Errorf("git protocol malformed packet size")
+		}
+		if pos+pktLen > len(body) {
+			break
+		}
+		content := strings.TrimRight(string(body[pos+4:pos+pktLen]), "\n")
+		cmd, ok := strings.CutPrefix(content, "command=")
+		if !ok {
+			pos += pktLen
+			continue
+		}
+		return cmd == "ls-refs", nil
+	}
+
+	return false, nil
 }
