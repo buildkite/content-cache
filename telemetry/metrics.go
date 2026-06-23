@@ -50,6 +50,9 @@ type Metrics struct {
 	upstreamFetchBytesTotal metric.Int64Counter
 	blobTouchesTotal        metric.Int64Counter
 	blobTouchMissesTotal    metric.Int64Counter
+	spoolRequestsTotal      metric.Int64Counter
+	spoolWaitDuration       metric.Float64Histogram
+	spoolBytesSavedTotal    metric.Int64Counter
 	backendRequestDuration  metric.Float64Histogram
 	backendRequestsTotal    metric.Int64Counter
 	backendBytesTotal       metric.Int64Counter
@@ -227,6 +230,34 @@ func doInitMetrics(ctx context.Context, cfg MetricsConfig) error {
 	upstreamFetchBytesTotal, err := meter.Int64Counter(
 		"content_cache_upstream_fetch_bytes_total",
 		metric.WithDescription("Total bytes fetched from upstream"),
+		metric.WithUnit("By"),
+	)
+	if err != nil {
+		return err
+	}
+
+	spoolRequestsTotal, err := meter.Int64Counter(
+		"content_cache_spool_requests_total",
+		metric.WithDescription("Total requests entering download spooling, by caller role and outcome"),
+		metric.WithUnit("{request}"),
+	)
+	if err != nil {
+		return err
+	}
+
+	spoolWaitDuration, err := meter.Float64Histogram(
+		"content_cache_spool_wait_duration_seconds",
+		metric.WithDescription("Time coalesced requests waited for the origin request's download"),
+		metric.WithUnit("s"),
+		metric.WithExplicitBucketBoundaries(0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 20, 40, 60, 120, 300),
+	)
+	if err != nil {
+		return err
+	}
+
+	spoolBytesSavedTotal, err := meter.Int64Counter(
+		"content_cache_spool_bytes_saved_total",
+		metric.WithDescription("Estimated upstream payload bytes avoided by successful coalesced requests"),
 		metric.WithUnit("By"),
 	)
 	if err != nil {
@@ -475,6 +506,9 @@ func doInitMetrics(ctx context.Context, cfg MetricsConfig) error {
 		upstreamFetchBytesTotal:        upstreamFetchBytesTotal,
 		blobTouchesTotal:               blobTouchesTotal,
 		blobTouchMissesTotal:           blobTouchMissesTotal,
+		spoolRequestsTotal:             spoolRequestsTotal,
+		spoolWaitDuration:              spoolWaitDuration,
+		spoolBytesSavedTotal:           spoolBytesSavedTotal,
 		backendRequestDuration:         backendRequestDuration,
 		backendRequestsTotal:           backendRequestsTotal,
 		backendBytesTotal:              backendBytesTotal,
@@ -718,6 +752,35 @@ func RecordUpstreamFetch(ctx context.Context, protocol string, duration time.Dur
 	globalMetrics.upstreamFetchTotal.Add(ctx, 1, metric.WithAttributes(attrs...))
 	if bytesRead > 0 {
 		globalMetrics.upstreamFetchBytesTotal.Add(ctx, bytesRead, metric.WithAttributes(attrs...))
+	}
+}
+
+// RecordSpoolRequest records one caller entering the request spool. Role is
+// "origin" when the caller executed the download and "coalesced" when it
+// joined an existing download. bytesSaved is the downloaded object size for a
+// successful coalesced caller and zero otherwise.
+func RecordSpoolRequest(ctx context.Context, role, outcome string, duration time.Duration, bytesSaved int64) {
+	if globalMetrics == nil {
+		return
+	}
+
+	protocol := ProtocolFromContext(ctx)
+	if protocol == "" {
+		protocol = "unknown"
+	}
+
+	attrs := []attribute.KeyValue{
+		attribute.String("protocol", protocol),
+		attribute.String("role", role),
+		attribute.String("outcome", outcome),
+	}
+	globalMetrics.spoolRequestsTotal.Add(ctx, 1, metric.WithAttributes(attrs...))
+
+	if role == "coalesced" {
+		globalMetrics.spoolWaitDuration.Record(ctx, duration.Seconds(), metric.WithAttributes(attrs...))
+		if bytesSaved > 0 {
+			globalMetrics.spoolBytesSavedTotal.Add(ctx, bytesSaved, metric.WithAttributes(attribute.String("protocol", protocol)))
+		}
 	}
 }
 

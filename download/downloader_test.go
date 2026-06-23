@@ -32,6 +32,18 @@ func TestDo_SingleCall(t *testing.T) {
 
 func TestDo_ConcurrentDeduplication(t *testing.T) {
 	d := New()
+	type spoolEvent struct {
+		role       string
+		outcome    string
+		bytesSaved int64
+	}
+	var eventsMu sync.Mutex
+	var events []spoolEvent
+	d.recordSpool = func(_ context.Context, role, outcome string, _ time.Duration, bytesSaved int64) {
+		eventsMu.Lock()
+		defer eventsMu.Unlock()
+		events = append(events, spoolEvent{role: role, outcome: outcome, bytesSaved: bytesSaved})
+	}
 
 	var callCount atomic.Int32
 	expected := &Result{
@@ -63,6 +75,24 @@ func TestDo_ConcurrentDeduplication(t *testing.T) {
 		require.NoError(t, errs[i])
 		require.Equal(t, expected.Hash, results[i].Hash)
 	}
+
+	eventsMu.Lock()
+	defer eventsMu.Unlock()
+	var origins, coalesced int
+	var bytesSaved int64
+	for _, event := range events {
+		require.Equal(t, "success", event.outcome)
+		switch event.role {
+		case spoolRoleOrigin:
+			origins++
+		case spoolRoleCoalesced:
+			coalesced++
+		}
+		bytesSaved += event.bytesSaved
+	}
+	require.Equal(t, 1, origins)
+	require.Equal(t, 9, coalesced)
+	require.Equal(t, int64(36), bytesSaved)
 }
 
 func TestDo_CallerTimeout(t *testing.T) {

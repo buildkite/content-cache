@@ -39,12 +39,24 @@ func setupTestMetrics(t *testing.T) *sdkmetric.ManualReader {
 	authRequestsTotal, err := meter.Int64Counter("content_cache_auth_requests_total")
 	require.NoError(t, err)
 
+	spoolRequestsTotal, err := meter.Int64Counter("content_cache_spool_requests_total")
+	require.NoError(t, err)
+
+	spoolWaitDuration, err := meter.Float64Histogram("content_cache_spool_wait_duration_seconds")
+	require.NoError(t, err)
+
+	spoolBytesSavedTotal, err := meter.Int64Counter("content_cache_spool_bytes_saved_total")
+	require.NoError(t, err)
+
 	globalMetrics = &Metrics{
 		requestsTotal:           requestsTotal,
 		responseBytesTotal:      responseBytesTotal,
 		requestDuration:         requestDuration,
 		requestsByEndpointTotal: requestsByEndpointTotal,
 		authRequestsTotal:       authRequestsTotal,
+		spoolRequestsTotal:      spoolRequestsTotal,
+		spoolWaitDuration:       spoolWaitDuration,
+		spoolBytesSavedTotal:    spoolBytesSavedTotal,
 		meterProvider:           mp,
 	}
 
@@ -54,6 +66,31 @@ func setupTestMetrics(t *testing.T) *sdkmetric.ManualReader {
 	})
 
 	return reader
+}
+
+func TestRecordSpoolRequest(t *testing.T) {
+	reader := setupTestMetrics(t)
+
+	ctx := WithProtocolContext(context.Background(), "npm")
+	RecordSpoolRequest(ctx, "origin", "success", 100*time.Millisecond, 0)
+	RecordSpoolRequest(ctx, "coalesced", "success", 75*time.Millisecond, 4096)
+
+	rm := collectMetrics(t, reader)
+
+	requestDps := findCounter(rm, "content_cache_spool_requests_total")
+	require.Len(t, requestDps, 2)
+	require.True(t, hasAttr(requestDps[0].Attributes, "protocol", "npm"))
+	require.True(t, hasAttr(requestDps[0].Attributes, "outcome", "success"))
+
+	waitDps := findHistogram(rm, "content_cache_spool_wait_duration_seconds")
+	require.Len(t, waitDps, 1)
+	require.Equal(t, uint64(1), waitDps[0].Count)
+	require.True(t, hasAttr(waitDps[0].Attributes, "role", "coalesced"))
+
+	bytesDps := findCounter(rm, "content_cache_spool_bytes_saved_total")
+	require.Len(t, bytesDps, 1)
+	require.EqualValues(t, 4096, bytesDps[0].Value)
+	require.True(t, hasAttr(bytesDps[0].Attributes, "protocol", "npm"))
 }
 
 // collectMetrics reads all metrics from the ManualReader.
