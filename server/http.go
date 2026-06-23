@@ -214,6 +214,7 @@ type Server struct {
 	httpcacheIndex  *httpcache.Index
 	httpcache       *httpcache.Handler
 	metaDB          metadb.MetaDB
+	metadataReapers *metadataReapers
 	gcManager       *gc.Manager
 	s3fifoManager   *s3fifo.Manager
 }
@@ -297,6 +298,13 @@ func New(cfg Config) (*Server, error) {
 	if err != nil {
 		return nil, err
 	}
+
+	expiryCheckInterval := cfg.ExpiryCheckInterval
+	if expiryCheckInterval <= 0 {
+		expiryCheckInterval = time.Hour
+	}
+	cfg.ExpiryCheckInterval = expiryCheckInterval
+	metadataReapers := newMetadataReapers(metaDB, expiryCheckInterval, cfg.Logger)
 
 	// Create a single shared EnvelopeCodec (zstd encoder/decoder) for all EnvelopeIndex instances.
 	sharedCodec, err := metadb.NewEnvelopeCodec()
@@ -817,6 +825,7 @@ func New(cfg Config) (*Server, error) {
 		httpcacheIndex:  httpcacheIdx,
 		httpcache:       httpcacheHndlr,
 		metaDB:          metaDB,
+		metadataReapers: metadataReapers,
 		gcManager:       gcManager,
 		s3fifoManager:   s3fifoMgr,
 	}
@@ -1063,6 +1072,13 @@ func (s *Server) loggingMiddleware(next http.Handler) http.Handler {
 
 // Start starts the server.
 func (s *Server) Start() error {
+	if s.metadataReapers != nil {
+		s.logger.Info("starting metadata expiry reapers",
+			"interval", s.config.ExpiryCheckInterval,
+		)
+		s.metadataReapers.Start(context.Background())
+	}
+
 	if s.s3fifoManager != nil {
 		s.logger.Info("starting S3-FIFO eviction manager")
 		s.s3fifoManager.Start(context.Background())
@@ -1088,6 +1104,11 @@ func (s *Server) Start() error {
 // Shutdown gracefully shuts down the server.
 func (s *Server) Shutdown(ctx context.Context) error {
 	s.logger.Info("shutting down server")
+
+	// Stop metadata expiry reapers before closing the HTTP server.
+	if s.metadataReapers != nil {
+		s.metadataReapers.Stop()
+	}
 
 	// Stop S3-FIFO eviction manager
 	if s.s3fifoManager != nil {
