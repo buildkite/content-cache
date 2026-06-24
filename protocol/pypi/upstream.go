@@ -27,17 +27,36 @@ var ErrNotFound = errors.New("not found")
 
 // Upstream fetches packages from an upstream PyPI Simple API.
 type Upstream struct {
-	baseURL string
-	client  *http.Client
+	baseURL  string
+	username string
+	password string
+	client   *http.Client
 }
 
 // UpstreamOption configures an Upstream.
 type UpstreamOption func(*Upstream)
 
-// WithSimpleURL sets the upstream Simple API URL.
-func WithSimpleURL(url string) UpstreamOption {
+// WithSimpleURL sets the upstream Simple API URL. Any userinfo (user:pass@) is
+// stripped from the URL and applied as Basic auth on every upstream request —
+// including file downloads, which the index commonly serves from a different
+// host (e.g. a CDN) that requires the same credentials.
+func WithSimpleURL(rawURL string) UpstreamOption {
 	return func(u *Upstream) {
-		u.baseURL = strings.TrimSuffix(url, "/") + "/"
+		trimmed := strings.TrimSuffix(rawURL, "/") + "/"
+		if parsed, err := url.Parse(trimmed); err == nil && parsed.User != nil {
+			u.username = parsed.User.Username()
+			u.password, _ = parsed.User.Password()
+			parsed.User = nil
+			trimmed = parsed.String()
+		}
+		u.baseURL = trimmed
+	}
+}
+
+// setAuth applies the upstream Basic credentials to a request, if configured.
+func (u *Upstream) setAuth(req *http.Request) {
+	if u.username != "" || u.password != "" {
+		req.SetBasicAuth(u.username, u.password)
 	}
 }
 
@@ -75,6 +94,7 @@ func (u *Upstream) FetchProjectPage(ctx context.Context, project string) ([]byte
 
 	// Request JSON preferred, fallback to HTML
 	req.Header.Set("Accept", ContentTypeJSON+", "+ContentTypeHTML+";q=0.9")
+	u.setAuth(req)
 
 	resp, err := u.client.Do(req) //nolint:gosec // request targets operator-configured upstream, not user-controlled
 	if err != nil {
@@ -107,6 +127,7 @@ func (u *Upstream) FetchFile(ctx context.Context, fileURL string) (io.ReadCloser
 	if err != nil {
 		return nil, fmt.Errorf("creating request: %w", err)
 	}
+	u.setAuth(req)
 
 	resp, err := u.client.Do(req)
 	if err != nil {
