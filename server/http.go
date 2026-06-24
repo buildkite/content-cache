@@ -171,6 +171,12 @@ type Config struct {
 	// When both TLSCertFile and TLSKeyFile are set, the server starts with TLS.
 	TLSCertFile string
 
+	// PublicBaseURL is the external base URL (scheme://host[:port])
+	// clients use to reach this cache.
+	// When set, served download links (PyPI files, NPM tarballs) are built from it
+	// instead of the request scheme and Host header.
+	PublicBaseURL string
+
 	// TLSKeyFile is the path to the TLS private key file.
 	TLSKeyFile string
 
@@ -475,6 +481,9 @@ func New(cfg Config) (*Server, error) {
 		}
 		npmHandlerOpts = append(npmHandlerOpts, npm.WithUpstream(npm.NewUpstream(npmUpstreamOpts...)))
 	}
+	if cfg.PublicBaseURL != "" {
+		npmHandlerOpts = append(npmHandlerOpts, npm.WithPublicBaseURL(cfg.PublicBaseURL))
+	}
 	npmHandler := npm.NewHandler(npmIndex, cafsStore, npmHandlerOpts...)
 
 	// Initialize OCI components using metadb EnvelopeIndex
@@ -568,6 +577,9 @@ func New(cfg Config) (*Server, error) {
 	}
 	if cfg.PyPIMetadataTTL > 0 {
 		pypiHandlerOpts = append(pypiHandlerOpts, pypi.WithMetadataTTL(cfg.PyPIMetadataTTL))
+	}
+	if cfg.PublicBaseURL != "" {
+		pypiHandlerOpts = append(pypiHandlerOpts, pypi.WithPublicBaseURL(cfg.PublicBaseURL))
 	}
 	pypiHandler := pypi.NewHandler(pypiIndex, cafsStore, pypiHandlerOpts...)
 

@@ -39,6 +39,10 @@ type Handler struct {
 	downloader  *download.Downloader
 	metadataTTL time.Duration
 
+	// publicBaseURL, when set, is the external base URL used to build served
+	// download links instead of the request scheme and Host header.
+	publicBaseURL string
+
 	// Lifecycle management for background goroutines
 	wg     sync.WaitGroup
 	ctx    context.Context
@@ -73,6 +77,16 @@ func WithDownloader(dl *download.Downloader) HandlerOption {
 func WithMetadataTTL(ttl time.Duration) HandlerOption {
 	return func(h *Handler) {
 		h.metadataTTL = ttl
+	}
+}
+
+// WithPublicBaseURL sets the external base URL (e.g. https://cache.example.com)
+// used when rewriting file download links. When empty, the request scheme and
+// Host header are used. Set this when TLS is terminated by an upstream load
+// balancer, so the cache cannot infer https from the inbound request.
+func WithPublicBaseURL(baseURL string) HandlerOption {
+	return func(h *Handler) {
+		h.publicBaseURL = strings.TrimSuffix(baseURL, "/")
 	}
 }
 
@@ -562,18 +576,28 @@ func (h *Handler) cacheFile(ctx context.Context, project, filename string, hash 
 	logger.Info("cached file", "filename", filename, "hash", hash.ShortString(), "size", size)
 }
 
+// baseURL returns the external base URL used to build served download links.
+// It prefers the configured public base URL and otherwise derives it from the
+// request scheme and Host header.
+func (h *Handler) baseURL(r *http.Request) string {
+	if h.publicBaseURL != "" {
+		return h.publicBaseURL
+	}
+	scheme := "http"
+	if r.TLS != nil {
+		scheme = "https"
+	}
+	return fmt.Sprintf("%s://%s", scheme, r.Host)
+}
+
 // writeProjectResponse writes the project page response in HTML or JSON format.
 func (h *Handler) writeProjectResponse(w http.ResponseWriter, r *http.Request, cached *CachedProject, normalized string) {
-	// Build file list for response
+	// Rewrite file URLs to point to our proxy. We include the /pypi prefix
+	// since the server strips it before passing to this handler.
+	base := h.baseURL(r)
 	var files []ProjectFile
 	for _, f := range cached.Files {
-		// Rewrite URL to point to our proxy
-		// Note: We include /pypi prefix since the server strips it before passing to this handler
-		scheme := "http"
-		if r.TLS != nil {
-			scheme = "https"
-		}
-		proxyURL := fmt.Sprintf("%s://%s/pypi/packages/%s/%s", scheme, r.Host, normalized, f.Filename)
+		proxyURL := fmt.Sprintf("%s/pypi/packages/%s/%s", base, normalized, f.Filename)
 
 		pf := ProjectFile{
 			Filename:       f.Filename,

@@ -37,6 +37,7 @@ type ServeCmd struct {
 	Storage       string `kong:"name='storage',default='./cache',env='CACHE_STORAGE',help='Storage directory path',group='Server'"`
 	TLSCertFile   string `kong:"name='tls-cert',env='TLS_CERT_FILE',type='existingfile',help='Path to TLS certificate file (enables HTTPS)',group='Server'"`
 	TLSKeyFile    string `kong:"name='tls-key',env='TLS_KEY_FILE',type='existingfile',help='Path to TLS private key file (enables HTTPS)',group='Server'"`
+	PublicBaseURL string `kong:"name='public-base-url',env='PUBLIC_BASE_URL',help='External base URL clients use to reach this cache (e.g. https://cache.example.com). Used to build served download links.',group='Server'"`
 
 	AuthToken        string `kong:"name='auth-token',env='AUTH_TOKEN',help='Bearer token for inbound authentication (mutually exclusive with --oidc-policies)',group='Auth'"`
 	AuthTokenFile    string `kong:"name='auth-token-file',env='AUTH_TOKEN_FILE',type='existingfile',help='Path to file containing auth token (for k8s secret mounts)',group='Auth'"`
@@ -263,6 +264,7 @@ func (cmd *ServeCmd) Run() error {
 		StoragePath:                        cmd.Storage,
 		TLSCertFile:                        cmd.TLSCertFile,
 		TLSKeyFile:                         cmd.TLSKeyFile,
+		PublicBaseURL:                      cmd.PublicBaseURL,
 		AuthToken:                          authToken,
 		OIDCValidator:                      oidcValidator,
 		Credentials:                        creds,

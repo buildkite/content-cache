@@ -27,7 +27,7 @@ func setupMetaDB(t *testing.T, tmpDir string) (*metadb.BoltDB, *Index, func()) {
 	return db, idx, func() { _ = db.Close() }
 }
 
-func newTestHandler(t *testing.T, upstreamServer *httptest.Server) (*Handler, func()) {
+func newTestHandler(t *testing.T, upstreamServer *httptest.Server, extraOpts ...HandlerOption) (*Handler, func()) {
 	t.Helper()
 	// Use a manual temp dir instead of t.TempDir() to avoid race with async goroutines
 	tmpDir, err := os.MkdirTemp("", "pypi-test-*")
@@ -44,7 +44,7 @@ func newTestHandler(t *testing.T, upstreamServer *httptest.Server) (*Handler, fu
 	}
 	upstream := NewUpstream(opts...)
 
-	h := NewHandler(idx, cafs, WithUpstream(upstream))
+	h := NewHandler(idx, cafs, append([]HandlerOption{WithUpstream(upstream)}, extraOpts...)...)
 	return h, func() {
 		h.Close()
 		closeDB()
@@ -118,6 +118,57 @@ func TestHandlerProject(t *testing.T) {
 
 		require.Equal(t, http.StatusMovedPermanently, w.Code)
 		require.Equal(t, "/simple/requests/", w.Header().Get("Location"))
+	})
+}
+
+func TestHandlerProjectPublicBaseURL(t *testing.T) {
+	upstreamHandler := func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/simple/requests/" {
+			w.Header().Set("Content-Type", "text/html")
+			_, _ = w.Write([]byte(`<!DOCTYPE html>
+<html><body>
+<a href="https://files.pythonhosted.org/packages/requests-2.31.0-py3-none-any.whl#sha256=58cd2187c01e70e6e26505bca751777aa9f2ee0b7f4300988b709f44e013003f">requests-2.31.0-py3-none-any.whl</a><br/>
+</body></html>`))
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}
+
+	t.Run("configured base URL overrides request scheme and host", func(t *testing.T) {
+		upstream := httptest.NewServer(http.HandlerFunc(upstreamHandler))
+		defer upstream.Close()
+
+		h, cleanup := newTestHandler(t, upstream, WithPublicBaseURL("https://cache.example.com/"))
+		defer cleanup()
+
+		req := httptest.NewRequest(http.MethodGet, "/simple/requests/", nil)
+		req.Host = "localhost:8080"
+		w := httptest.NewRecorder()
+
+		h.ServeHTTP(w, req)
+
+		require.Equal(t, http.StatusOK, w.Code)
+		body := w.Body.String()
+		// Trailing slash trimmed, configured host used, request Host ignored.
+		require.Contains(t, body, "https://cache.example.com/pypi/packages/requests/")
+		require.NotContains(t, body, "localhost:8080")
+	})
+
+	t.Run("falls back to request scheme and host when unset", func(t *testing.T) {
+		upstream := httptest.NewServer(http.HandlerFunc(upstreamHandler))
+		defer upstream.Close()
+
+		h, cleanup := newTestHandler(t, upstream)
+		defer cleanup()
+
+		req := httptest.NewRequest(http.MethodGet, "/simple/requests/", nil)
+		req.Host = "localhost:8080"
+		w := httptest.NewRecorder()
+
+		h.ServeHTTP(w, req)
+
+		require.Equal(t, http.StatusOK, w.Code)
+		require.Contains(t, w.Body.String(), "http://localhost:8080/pypi/packages/requests/")
 	})
 }
 
