@@ -93,6 +93,39 @@ func TestAdmitNewBlobGoesToSmall(t *testing.T) {
 	mgr.mu.Unlock()
 }
 
+func TestNewManagerRejectsInvalidConfig(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		cfg  Config
+	}{
+		{
+			name: "negative max size",
+			cfg:  Config{MaxSize: -1},
+		},
+		{
+			name: "small queue percent above 100",
+			cfg:  Config{MaxSize: 100, SmallQueuePercent: 101},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+
+			mdb := metadb.NewBoltDB(metadb.WithNoSync(true))
+			require.NoError(t, mdb.Open(dir+"/meta.db"))
+			t.Cleanup(func() { mdb.Close() })
+
+			fsBackend, err := backend.NewFilesystem(dir + "/blobs")
+			require.NoError(t, err)
+
+			boltQueues, err := NewBoltQueues(mdb.DB())
+			require.NoError(t, err)
+
+			_, err = NewManager(boltQueues, mdb, fsBackend, tc.cfg)
+			require.Error(t, err)
+		})
+	}
+}
+
 func TestAdmitGhostHitGoesToMain(t *testing.T) {
 	ctx := context.Background()
 	mgr, mdb, b := testManager(t, Config{})
@@ -260,6 +293,37 @@ func TestPinnedBlobSkipped(t *testing.T) {
 
 	exists, _ := b.Exists(ctx, contentcache.BlobStorageKey(mustParseHash(t, hash)))
 	require.True(t, exists)
+}
+
+func TestPinnedOverlimitDoesNotImmediatelyReschedule(t *testing.T) {
+	ctx := context.Background()
+	mgr, mdb, b := testManager(t, Config{MaxSize: 5})
+	content := "0123456789"
+	hash := putBlob(t, ctx, mdb, b, content)
+	size := int64(len(content))
+
+	entry, err := mdb.GetBlob(ctx, hash)
+	require.NoError(t, err)
+	entry.RefCount = 1
+	require.NoError(t, mdb.PutBlob(ctx, entry))
+
+	mgr.Admit(ctx, hash, size)
+
+	// Admit signals once because the cache is over the size limit. Drain that
+	// signal so this test only observes whether maybeEvict requeues itself.
+	select {
+	case <-mgr.evictCh:
+	default:
+		require.Fail(t, "expected admission to signal eviction")
+	}
+
+	mgr.maybeEvict(ctx)
+
+	select {
+	case <-mgr.evictCh:
+		require.Fail(t, "pinned-only overlimit cache should wait for ticker or a later admission, not hot-loop")
+	default:
+	}
 }
 
 func TestManagerRemove(t *testing.T) {

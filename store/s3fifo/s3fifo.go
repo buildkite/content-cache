@@ -74,8 +74,14 @@ type Manager struct {
 // It recomputes byte totals from the persisted queue state so restarts are
 // warm (no eviction penalty on startup).
 func NewManager(queues Queues, mdb metadb.MetaDB, b backend.Backend, cfg Config) (*Manager, error) {
+	if cfg.MaxSize <= 0 {
+		return nil, fmt.Errorf("s3fifo: MaxSize must be greater than zero")
+	}
 	if cfg.SmallQueuePercent <= 0 {
 		cfg.SmallQueuePercent = defaultSmallQueuePercent
+	}
+	if cfg.SmallQueuePercent > 100 {
+		return nil, fmt.Errorf("s3fifo: SmallQueuePercent must be between 1 and 100")
 	}
 	if cfg.CheckInterval <= 0 {
 		cfg.CheckInterval = defaultCheckInterval
@@ -282,8 +288,10 @@ func (m *Manager) maybeEvict(ctx context.Context) {
 			)
 		}
 
-		// If still over limit, schedule another eviction pass.
-		if m.smallBytes+m.mainBytes > m.config.MaxSize {
+		// If still over limit, schedule another eviction pass only after real
+		// progress. When every candidate is pinned, retrying immediately just
+		// spins; the ticker or a later admission will retry eviction.
+		if smallActed && m.smallBytes+m.mainBytes > m.config.MaxSize {
 			select {
 			case m.evictCh <- struct{}{}:
 			default:
