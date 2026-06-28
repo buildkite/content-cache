@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"regexp"
@@ -27,18 +28,85 @@ var ErrNotFound = errors.New("not found")
 
 // Upstream fetches packages from an upstream PyPI Simple API.
 type Upstream struct {
-	baseURL string
-	client  *http.Client
+	baseURL        string
+	upstreamScheme string
+	upstreamHost   string
+	username       string
+	password       string
+	client         *http.Client
 }
 
 // UpstreamOption configures an Upstream.
 type UpstreamOption func(*Upstream)
 
-// WithSimpleURL sets the upstream Simple API URL.
-func WithSimpleURL(url string) UpstreamOption {
+// WithSimpleURL sets the upstream Simple API URL. Any userinfo (user:pass@) is
+// stripped from the URL and applied as Basic auth on every upstream request —
+// including file downloads, which the index commonly serves from a different
+// host (e.g. a CDN) that requires the same credentials.
+func WithSimpleURL(rawURL string) UpstreamOption {
 	return func(u *Upstream) {
-		u.baseURL = strings.TrimSuffix(url, "/") + "/"
+		trimmed := strings.TrimSuffix(rawURL, "/") + "/"
+		if parsed, err := url.Parse(trimmed); err == nil && parsed.User != nil {
+			u.username = parsed.User.Username()
+			u.password, _ = parsed.User.Password()
+			parsed.User = nil
+			trimmed = parsed.String()
+		}
+		if parsed, err := url.Parse(trimmed); err == nil {
+			u.upstreamScheme = strings.ToLower(parsed.Scheme)
+			u.upstreamHost = canonicalAuthority(parsed)
+		}
+		u.baseURL = trimmed
 	}
+}
+
+// setAuth applies the upstream Basic credentials to same-origin requests.
+func (u *Upstream) setAuth(req *http.Request) {
+	if (u.username != "" || u.password != "") && u.sameOrigin(req.URL) {
+		req.SetBasicAuth(u.username, u.password)
+	}
+}
+
+func (u *Upstream) sameOrigin(reqURL *url.URL) bool {
+	if u.upstreamScheme != "" && !strings.EqualFold(reqURL.Scheme, u.upstreamScheme) {
+		return false
+	}
+	if u.upstreamHost != "" && !strings.EqualFold(canonicalAuthority(reqURL), u.upstreamHost) {
+		return false
+	}
+	return true
+}
+
+func (u *Upstream) do(req *http.Request) (*http.Response, error) {
+	client := *u.client
+	originalCheckRedirect := client.CheckRedirect
+	client.CheckRedirect = func(next *http.Request, via []*http.Request) error {
+		if !u.sameOrigin(next.URL) {
+			next.Header.Del("Authorization")
+		}
+		if originalCheckRedirect != nil {
+			return originalCheckRedirect(next, via)
+		}
+		return nil
+	}
+	return client.Do(req) //nolint:gosec // request targets operator-configured upstream or redirect target selected by that upstream
+}
+
+func canonicalAuthority(u *url.URL) string {
+	hostname := strings.ToLower(u.Hostname())
+	port := u.Port()
+	if port == "" {
+		switch strings.ToLower(u.Scheme) {
+		case "http":
+			port = "80"
+		case "https":
+			port = "443"
+		}
+	}
+	if port == "" {
+		return hostname
+	}
+	return net.JoinHostPort(hostname, port)
 }
 
 // WithHTTPClient sets a custom HTTP client.
@@ -51,7 +119,9 @@ func WithHTTPClient(client *http.Client) UpstreamOption {
 // NewUpstream creates a new upstream PyPI client.
 func NewUpstream(opts ...UpstreamOption) *Upstream {
 	u := &Upstream{
-		baseURL: DefaultSimpleURL,
+		baseURL:        DefaultSimpleURL,
+		upstreamScheme: "https",
+		upstreamHost:   "pypi.org:443",
 		client: &http.Client{
 			Timeout: DefaultTimeout,
 		},
@@ -75,8 +145,9 @@ func (u *Upstream) FetchProjectPage(ctx context.Context, project string) ([]byte
 
 	// Request JSON preferred, fallback to HTML
 	req.Header.Set("Accept", ContentTypeJSON+", "+ContentTypeHTML+";q=0.9")
+	u.setAuth(req)
 
-	resp, err := u.client.Do(req) //nolint:gosec // request targets operator-configured upstream, not user-controlled
+	resp, err := u.do(req) //nolint:gosec // request targets operator-configured upstream, not user-controlled
 	if err != nil {
 		return nil, "", fmt.Errorf("performing request: %w", err)
 	}
@@ -107,8 +178,9 @@ func (u *Upstream) FetchFile(ctx context.Context, fileURL string) (io.ReadCloser
 	if err != nil {
 		return nil, fmt.Errorf("creating request: %w", err)
 	}
+	u.setAuth(req)
 
-	resp, err := u.client.Do(req)
+	resp, err := u.do(req)
 	if err != nil {
 		return nil, fmt.Errorf("performing request: %w", err)
 	}
