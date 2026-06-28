@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"regexp"
@@ -27,10 +28,12 @@ var ErrNotFound = errors.New("not found")
 
 // Upstream fetches packages from an upstream PyPI Simple API.
 type Upstream struct {
-	baseURL  string
-	username string
-	password string
-	client   *http.Client
+	baseURL        string
+	upstreamScheme string
+	upstreamHost   string
+	username       string
+	password       string
+	client         *http.Client
 }
 
 // UpstreamOption configures an Upstream.
@@ -49,15 +52,61 @@ func WithSimpleURL(rawURL string) UpstreamOption {
 			parsed.User = nil
 			trimmed = parsed.String()
 		}
+		if parsed, err := url.Parse(trimmed); err == nil {
+			u.upstreamScheme = strings.ToLower(parsed.Scheme)
+			u.upstreamHost = canonicalAuthority(parsed)
+		}
 		u.baseURL = trimmed
 	}
 }
 
-// setAuth applies the upstream Basic credentials to a request, if configured.
+// setAuth applies the upstream Basic credentials to same-origin requests.
 func (u *Upstream) setAuth(req *http.Request) {
-	if u.username != "" || u.password != "" {
+	if (u.username != "" || u.password != "") && u.sameOrigin(req.URL) {
 		req.SetBasicAuth(u.username, u.password)
 	}
+}
+
+func (u *Upstream) sameOrigin(reqURL *url.URL) bool {
+	if u.upstreamScheme != "" && !strings.EqualFold(reqURL.Scheme, u.upstreamScheme) {
+		return false
+	}
+	if u.upstreamHost != "" && !strings.EqualFold(canonicalAuthority(reqURL), u.upstreamHost) {
+		return false
+	}
+	return true
+}
+
+func (u *Upstream) do(req *http.Request) (*http.Response, error) {
+	client := *u.client
+	originalCheckRedirect := client.CheckRedirect
+	client.CheckRedirect = func(next *http.Request, via []*http.Request) error {
+		if !u.sameOrigin(next.URL) {
+			next.Header.Del("Authorization")
+		}
+		if originalCheckRedirect != nil {
+			return originalCheckRedirect(next, via)
+		}
+		return nil
+	}
+	return client.Do(req) //nolint:gosec // request targets operator-configured upstream or redirect target selected by that upstream
+}
+
+func canonicalAuthority(u *url.URL) string {
+	hostname := strings.ToLower(u.Hostname())
+	port := u.Port()
+	if port == "" {
+		switch strings.ToLower(u.Scheme) {
+		case "http":
+			port = "80"
+		case "https":
+			port = "443"
+		}
+	}
+	if port == "" {
+		return hostname
+	}
+	return net.JoinHostPort(hostname, port)
 }
 
 // WithHTTPClient sets a custom HTTP client.
@@ -70,7 +119,9 @@ func WithHTTPClient(client *http.Client) UpstreamOption {
 // NewUpstream creates a new upstream PyPI client.
 func NewUpstream(opts ...UpstreamOption) *Upstream {
 	u := &Upstream{
-		baseURL: DefaultSimpleURL,
+		baseURL:        DefaultSimpleURL,
+		upstreamScheme: "https",
+		upstreamHost:   "pypi.org:443",
 		client: &http.Client{
 			Timeout: DefaultTimeout,
 		},
@@ -96,7 +147,7 @@ func (u *Upstream) FetchProjectPage(ctx context.Context, project string) ([]byte
 	req.Header.Set("Accept", ContentTypeJSON+", "+ContentTypeHTML+";q=0.9")
 	u.setAuth(req)
 
-	resp, err := u.client.Do(req) //nolint:gosec // request targets operator-configured upstream, not user-controlled
+	resp, err := u.do(req) //nolint:gosec // request targets operator-configured upstream, not user-controlled
 	if err != nil {
 		return nil, "", fmt.Errorf("performing request: %w", err)
 	}
@@ -129,7 +180,7 @@ func (u *Upstream) FetchFile(ctx context.Context, fileURL string) (io.ReadCloser
 	}
 	u.setAuth(req)
 
-	resp, err := u.client.Do(req)
+	resp, err := u.do(req)
 	if err != nil {
 		return nil, fmt.Errorf("performing request: %w", err)
 	}
