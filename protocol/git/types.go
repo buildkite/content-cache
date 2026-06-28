@@ -23,6 +23,11 @@ const (
 
 	// DefaultMaxDecompressedBodySize is the maximum size of a decompressed git-upload-pack body (500MB).
 	DefaultMaxDecompressedBodySize int64 = 500 * 1024 * 1024
+
+	// maxLsRefsScanSize bounds how much of an upload-pack request body is scanned
+	// to detect a protocol v2 "command=" pkt-line. The command appears at the very
+	// start of the body, so a small cap is sufficient.
+	maxLsRefsScanSize int64 = 64 * 1024
 )
 
 // ErrNotFound is returned when a cached pack is not found.
