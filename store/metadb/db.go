@@ -29,7 +29,7 @@ type EnvelopeExpiryStore interface {
 // MetaExpiryStore is the narrow interface used by ExpiryReaper for legacy metadata cleanup.
 type MetaExpiryStore interface {
 	GetExpiredMeta(ctx context.Context, before time.Time, limit int) ([]ExpiryEntry, error)
-	DeleteMetaWithRefs(ctx context.Context, protocol, key string) error
+	DeleteExpiredMetaWithRefs(ctx context.Context, entry ExpiryEntry) (bool, error)
 }
 
 // MetaDB provides metadata storage for the content cache.
@@ -46,6 +46,7 @@ type MetaDB interface {
 	PutMeta(ctx context.Context, protocol, key string, data []byte, ttl time.Duration) error
 	DeleteMeta(ctx context.Context, protocol, key string) error
 	DeleteMetaWithRefs(ctx context.Context, protocol, key string) error
+	DeleteExpiredMetaWithRefs(ctx context.Context, entry ExpiryEntry) (bool, error)
 	ListMeta(ctx context.Context, protocol string) ([]string, error)
 
 	// Blob tracking

@@ -103,14 +103,17 @@ func (r *ExpiryReaper) reapBatch(ctx context.Context) {
 	r.logger.Debug("reaping expired entries", "count", len(expired))
 
 	for _, entry := range expired {
-		if err := r.db.DeleteMetaWithRefs(ctx, entry.Protocol, entry.Key); err != nil {
+		deletedEntry, err := r.db.DeleteExpiredMetaWithRefs(ctx, entry)
+		if err != nil {
 			r.logger.Warn("failed to delete expired entry",
 				"protocol", entry.Protocol,
 				"key", entry.Key,
 				"error", err)
 			continue
 		}
-		deleted++
+		if deletedEntry {
+			deleted++
+		}
 	}
 
 	r.logger.Info("expired entries reaped",

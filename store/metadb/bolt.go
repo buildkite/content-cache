@@ -625,42 +625,82 @@ func (b *BoltDB) PutMetaWithRefs(_ context.Context, protocol, key string, data [
 // DeleteMetaWithRefs removes metadata and decrements all associated blob refs.
 func (b *BoltDB) DeleteMetaWithRefs(_ context.Context, protocol, key string) error {
 	return b.db.Update(func(tx *bbolt.Tx) error {
-		metaBucket := tx.Bucket(bucketMeta)
-		if metaBucket == nil {
+		return b.deleteMetaWithRefsInTx(tx, protocol, key)
+	})
+}
+
+// DeleteExpiredMetaWithRefs removes an expired legacy metadata entry if the
+// current expiry index still matches the reaper's snapshot.
+func (b *BoltDB) DeleteExpiredMetaWithRefs(_ context.Context, entry ExpiryEntry) (bool, error) {
+	deleted := false
+	err := b.db.Update(func(tx *bbolt.Tx) error {
+		if !b.metaExpiryMatchesInTx(tx, entry) {
 			return nil
 		}
-
-		refsBucket := tx.Bucket(bucketMetaBlobRefs)
-		blobsBucket := tx.Bucket(bucketBlobsByHash)
-
-		compoundKey := makeProtocolKey(protocol, key)
-
-		// Get refs for this meta key and decrement all
-		if refsBucket != nil && blobsBucket != nil {
-			refs := b.getMetaBlobRefs(refsBucket, compoundKey)
-			for _, hash := range refs {
-				if err := b.decrementBlobRefInTx(blobsBucket, hash); err != nil {
-					// Log but don't fail - ref may already be gone
-					b.logger.Warn("failed to decrement blob ref during delete",
-						"protocol", protocol,
-						"key", key,
-						"hash", hash,
-						"error", err)
-				}
-			}
-			// Delete the refs entry
-			if err := refsBucket.Delete(compoundKey); err != nil {
-				return fmt.Errorf("deleting refs: %w", err)
-			}
-		}
-
-		// Remove expiry index
-		if err := b.removeMetaExpiryIndex(tx, protocol, key); err != nil {
+		if err := b.deleteMetaWithRefsInTx(tx, entry.Protocol, entry.Key); err != nil {
 			return err
 		}
-
-		return metaBucket.Delete(compoundKey)
+		deleted = true
+		return nil
 	})
+	return deleted, err
+}
+
+func (b *BoltDB) metaExpiryMatchesInTx(tx *bbolt.Tx, entry ExpiryEntry) bool {
+	compoundKey := makeProtocolKey(entry.Protocol, entry.Key)
+	expectedExpiry := encodeTimestamp(entry.ExpiresAt)
+
+	reverseIndexBucket := tx.Bucket(bucketMetaExpiryByKey)
+	if reverseIndexBucket != nil {
+		if tsBytes := reverseIndexBucket.Get(compoundKey); tsBytes != nil {
+			return bytes.Equal(tsBytes, expectedExpiry)
+		}
+	}
+
+	expiryBucket := tx.Bucket(bucketMetaByExpiry)
+	if expiryBucket == nil {
+		return false
+	}
+	expiryKey := makeMetaExpiryKey(entry.ExpiresAt, entry.Protocol, entry.Key)
+	return bytes.Equal(expiryBucket.Get(expiryKey), compoundKey)
+}
+
+func (b *BoltDB) deleteMetaWithRefsInTx(tx *bbolt.Tx, protocol, key string) error {
+	metaBucket := tx.Bucket(bucketMeta)
+	if metaBucket == nil {
+		return nil
+	}
+
+	refsBucket := tx.Bucket(bucketMetaBlobRefs)
+	blobsBucket := tx.Bucket(bucketBlobsByHash)
+
+	compoundKey := makeProtocolKey(protocol, key)
+
+	// Get refs for this meta key and decrement all
+	if refsBucket != nil && blobsBucket != nil {
+		refs := b.getMetaBlobRefs(refsBucket, compoundKey)
+		for _, hash := range refs {
+			if err := b.decrementBlobRefInTx(blobsBucket, hash); err != nil {
+				// Log but don't fail - ref may already be gone
+				b.logger.Warn("failed to decrement blob ref during delete",
+					"protocol", protocol,
+					"key", key,
+					"hash", hash,
+					"error", err)
+			}
+		}
+		// Delete the refs entry
+		if err := refsBucket.Delete(compoundKey); err != nil {
+			return fmt.Errorf("deleting refs: %w", err)
+		}
+	}
+
+	// Remove expiry index
+	if err := b.removeMetaExpiryIndex(tx, protocol, key); err != nil {
+		return err
+	}
+
+	return metaBucket.Delete(compoundKey)
 }
 
 // getMetaBlobRefs retrieves the blob refs for a meta key.
@@ -1206,6 +1246,14 @@ func (b *BoltDB) DeleteExpiredEnvelopes(ctx context.Context, entries []EnvelopeE
 
 		for _, entry := range entries {
 			compoundKey := makeEnvelopeKey(entry.Protocol, entry.Kind, entry.Key)
+			expectedExpiry := encodeTimestamp(entry.ExpiresAt)
+
+			// Expired entries are selected in a separate read transaction. A request
+			// may refresh the same envelope before this delete transaction starts, so
+			// only delete when the current reverse index still matches the snapshot.
+			if reverseIndexBucket == nil || !bytes.Equal(reverseIndexBucket.Get(compoundKey), expectedExpiry) {
+				continue
+			}
 
 			// Decrement blob refs
 			if refsBucket != nil && blobsBucket != nil {

@@ -213,6 +213,53 @@ func TestEnvelope_BatchDeleteExpired(t *testing.T) {
 	require.Empty(t, keys)
 }
 
+func TestEnvelope_BatchDeleteExpiredSkipsRefreshedEnvelope(t *testing.T) {
+	db := setupEnvelopeTestDB(t)
+	ctx := context.Background()
+
+	oldHash := "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+	newHash := "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+	require.NoError(t, db.PutBlob(ctx, &BlobEntry{Hash: oldHash, Size: 100}))
+	require.NoError(t, db.PutBlob(ctx, &BlobEntry{Hash: newHash, Size: 200}))
+
+	now := time.Now()
+	expired := &MetadataEnvelope{
+		EnvelopeVersion: 1,
+		ContentType:     ContentType_CONTENT_TYPE_JSON,
+		Payload:         []byte(`{"version":1}`),
+		ExpiresAtUnixMs: now.Add(-time.Hour).UnixMilli(),
+		BlobRefs:        []string{oldHash},
+	}
+	require.NoError(t, db.PutEnvelope(ctx, "npm", "metadata", "pkg", expired))
+
+	entries, err := db.GetExpiredEnvelopes(ctx, now, 10)
+	require.NoError(t, err)
+	require.Len(t, entries, 1)
+
+	refreshed := &MetadataEnvelope{
+		EnvelopeVersion: 1,
+		ContentType:     ContentType_CONTENT_TYPE_JSON,
+		Payload:         []byte(`{"version":2}`),
+		ExpiresAtUnixMs: now.Add(time.Hour).UnixMilli(),
+		BlobRefs:        []string{newHash},
+	}
+	require.NoError(t, db.PutEnvelope(ctx, "npm", "metadata", "pkg", refreshed))
+
+	require.NoError(t, db.DeleteExpiredEnvelopes(ctx, entries))
+
+	env, err := db.GetEnvelope(ctx, "npm", "metadata", "pkg")
+	require.NoError(t, err)
+	require.Equal(t, []byte(`{"version":2}`), env.Payload)
+
+	oldBlob, err := db.GetBlob(ctx, oldHash)
+	require.NoError(t, err)
+	require.Equal(t, 0, oldBlob.RefCount)
+
+	newBlob, err := db.GetBlob(ctx, newHash)
+	require.NoError(t, err)
+	require.Equal(t, 1, newBlob.RefCount)
+}
+
 func TestEnvelope_UpdateModify(t *testing.T) {
 	db := setupEnvelopeTestDB(t)
 	ctx := context.Background()

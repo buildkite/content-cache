@@ -479,6 +479,40 @@ func TestBoltDB_DeleteMetaWithRefs(t *testing.T) {
 		require.NoError(t, err)
 		assert.Empty(t, refs)
 	})
+
+	t.Run("expired delete skips refreshed entry", func(t *testing.T) {
+		baseTime := time.Date(2024, 1, 1, 12, 0, 0, 0, time.UTC)
+		currentTime := baseTime
+		db := newTestBoltDB(t, WithNow(func() time.Time { return currentTime }))
+
+		require.NoError(t, db.PutBlob(ctx, &BlobEntry{Hash: "old-hash", Size: 100, CachedAt: baseTime, LastAccess: baseTime}))
+		require.NoError(t, db.PutBlob(ctx, &BlobEntry{Hash: "new-hash", Size: 200, CachedAt: baseTime, LastAccess: baseTime}))
+
+		require.NoError(t, db.PutMetaWithRefs(ctx, "npm", "pkg1", []byte(`{"v":1}`), 10*time.Minute, []string{"old-hash"}))
+
+		currentTime = baseTime.Add(30 * time.Minute)
+		expired, err := db.GetExpiredMeta(ctx, currentTime, 10)
+		require.NoError(t, err)
+		require.Len(t, expired, 1)
+
+		require.NoError(t, db.PutMetaWithRefs(ctx, "npm", "pkg1", []byte(`{"v":2}`), time.Hour, []string{"new-hash"}))
+
+		deleted, err := db.DeleteExpiredMetaWithRefs(ctx, expired[0])
+		require.NoError(t, err)
+		require.False(t, deleted)
+
+		data, err := db.GetMeta(ctx, "npm", "pkg1")
+		require.NoError(t, err)
+		require.JSONEq(t, `{"v":2}`, string(data))
+
+		oldBlob, err := db.GetBlob(ctx, "old-hash")
+		require.NoError(t, err)
+		assert.Equal(t, 0, oldBlob.RefCount)
+
+		newBlob, err := db.GetBlob(ctx, "new-hash")
+		require.NoError(t, err)
+		assert.Equal(t, 1, newBlob.RefCount)
+	})
 }
 
 func TestBoltDB_UpdateJSON(t *testing.T) {
