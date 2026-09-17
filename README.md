@@ -1,6 +1,6 @@
 # content-cache
 
-A content-addressable caching proxy for Go modules, NPM packages, PyPI packages, Maven artifacts, RubyGems, OCI registries, Git repositories, direct download artefacts, and a generic HTTP build cache compatible with sccache and Gradle's HTTP Build Cache. Reduces build times and network bandwidth by caching package downloads and build artifacts locally with automatic deduplication and expiration policies.
+A content-addressable caching proxy for Go modules, NPM packages, Zig package sources, PyPI packages, Maven artifacts, RubyGems, OCI registries, Git repositories, direct download artefacts, and a generic HTTP build cache compatible with sccache and Gradle's HTTP Build Cache. Reduces build times and network bandwidth by caching package downloads and build artifacts locally with automatic deduplication and expiration policies.
 
 ## Problem
 
@@ -137,6 +137,28 @@ git clone https://github.com/user/repo.git  # routed through proxy automatically
 # To undo
 git config --global --unset url."http://localhost:8080/git/github.com/".insteadOf
 
+# Cache Zig package downloads from build.zig.zon
+./content-cache serve --listen :8080 --storage ./cache \
+  --git-allowed-hosts github.com \
+  --fetch-allowed-hosts github.com,codeload.github.com
+
+# git+https dependencies can use the Git proxy through Git's URL rewrite.
+git config --global url."http://localhost:8080/git/github.com/".insteadOf "https://github.com/"
+
+# Tarball dependencies can point at /fetch; the .hash remains the same because Zig validates content.
+# In build.zig.zon:
+# .dependencies = .{
+#     .example = .{
+#         .url = "http://localhost:8080/fetch/github.com/owner/repo/archive/refs/tags/v1.2.3.tar.gz",
+#         .hash = "...",
+#     },
+# }
+zig build  # First build fetches package sources; later builds reuse content-cache plus Zig's own local cache
+
+# content-cache caches Zig package downloads, not Zig compile outputs.
+# Keep Zig's filesystem cache on persistent CI storage for build artifact reuse.
+export ZIG_GLOBAL_CACHE_DIR=/var/cache/buildkite/zig-global
+
 # Cache mise aqua downloads from GitHub Releases plus other direct HTTPS assets
 ./content-cache serve --listen :8080 --storage ./cache \
   --fetch-allowed-hosts raw.githubusercontent.com,releases.hashicorp.com,nodejs.org,dl.google.com
@@ -194,6 +216,7 @@ cargo build  # Subsequent builds: artifacts served from cache
 - **Maven Repository**: Full support for Maven Central with JAR, POM, and checksum caching
 - **RubyGems Registry**: Full support for Compact Index and legacy specs API with gem caching and SHA256 verification
 - **OCI Distribution v2**: Read-through cache for container registries with tag-to-digest resolution
+- **Zig Package Sources**: Cache `build.zig.zon` tarball dependencies through `/fetch` and `git+https` dependencies through `/git`; Zig compile outputs stay in Zig's filesystem cache because Zig does not expose a remote build-cache protocol
 - **Git Smart HTTP Proxy**: Caching proxy for `git clone`/`fetch` over HTTPS with pack-level caching, host allowlist, and singleflight deduplication
 - **Direct HTTPS Fetch Cache**: Read-through cache for immutable release artefacts and mirrored downloads via `/github-release/*` and `/fetch/{host}/...`
 - **Content-Addressable Storage**: BLAKE3 hashing with automatic deduplication
