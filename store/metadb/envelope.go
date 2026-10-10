@@ -19,11 +19,14 @@ const (
 	// 2KB threshold - zstd overhead not worth it for smaller payloads.
 	CompressionThreshold = 2048
 
-	// MaxPayloadSize is the maximum allowed uncompressed payload size.
-	MaxPayloadSize = 10 * 1024 * 1024 // 10MB
+	// MaxPayloadSize is the default uncompressed metadata limit.
+	MaxPayloadSize = 64 * 1024 * 1024 // 64MiB
 
-	// MaxDecompressedSize is the hard cap during decompression to prevent compression bombs.
-	MaxDecompressedSize = 10 * 1024 * 1024 // 10MB
+	// MaxDecompressedSize is the default decompression limit.
+	MaxDecompressedSize = MaxPayloadSize
+
+	// MaxAllowedPayloadSize bounds the configurable limit.
+	MaxAllowedPayloadSize = 256 * 1024 * 1024
 
 	// MaxAttributeKeys is the maximum number of attribute keys allowed.
 	MaxAttributeKeys = 10
@@ -36,7 +39,7 @@ const (
 )
 
 var (
-	// ErrPayloadTooLarge is returned when payload exceeds MaxPayloadSize.
+	// ErrPayloadTooLarge is returned when payload exceeds the configured limit.
 	ErrPayloadTooLarge = errors.New("payload exceeds maximum size")
 
 	// ErrDecompressionBomb is returned when decompressed size exceeds limit.
@@ -58,19 +61,48 @@ var (
 // EnvelopeCodec handles envelope encoding/decoding with optional compression.
 // encoderPool holds reusable zstd encoders; decoder is goroutine-safe.
 type EnvelopeCodec struct {
-	encoderPool sync.Pool
-	decoder     *zstd.Decoder
-	mu          sync.RWMutex
+	maxPayloadSize int
+	encoderPool    sync.Pool
+	decoder        *zstd.Decoder
+	mu             sync.RWMutex
+}
+
+// EnvelopeCodecOption configures metadata encoding and decoding.
+type EnvelopeCodecOption func(*EnvelopeCodec) error
+
+// ValidateMaxPayloadSize checks a metadata limit before opening storage.
+func ValidateMaxPayloadSize(size int) error {
+	if size < 1 || size > MaxAllowedPayloadSize {
+		return fmt.Errorf("metadata maximum size must be between 1 and %d bytes", MaxAllowedPayloadSize)
+	}
+	return nil
+}
+
+// WithMaxPayloadSize applies the same limit to writes and decompression.
+func WithMaxPayloadSize(size int) EnvelopeCodecOption {
+	return func(c *EnvelopeCodec) error {
+		if err := ValidateMaxPayloadSize(size); err != nil {
+			return err
+		}
+		c.maxPayloadSize = size
+		return nil
+	}
 }
 
 // NewEnvelopeCodec creates a new codec with a pooled zstd encoder and shared decoder.
-func NewEnvelopeCodec() (*EnvelopeCodec, error) {
-	dec, err := zstd.NewReader(nil)
+func NewEnvelopeCodec(opts ...EnvelopeCodecOption) (*EnvelopeCodec, error) {
+	c := &EnvelopeCodec{maxPayloadSize: MaxPayloadSize}
+	for _, opt := range opts {
+		if err := opt(c); err != nil {
+			return nil, err
+		}
+	}
+	dec, err := zstd.NewReader(nil, zstd.WithDecoderMaxMemory(uint64(c.maxPayloadSize)))
 	if err != nil {
 		return nil, fmt.Errorf("creating zstd decoder: %w", err)
 	}
 
-	c := &EnvelopeCodec{decoder: dec}
+	c.decoder = dec
 	c.encoderPool = sync.Pool{
 		New: func() any {
 			enc, err := zstd.NewWriter(nil, zstd.WithEncoderLevel(zstd.SpeedDefault))
@@ -97,7 +129,7 @@ func (c *EnvelopeCodec) Close() {
 // EncodePayload compresses payload if beneficial and returns encoded bytes with encoding type.
 // Also computes and returns the digest of the original (uncompressed) payload.
 func (c *EnvelopeCodec) EncodePayload(data []byte) (payload []byte, encoding ContentEncoding, digest string, err error) {
-	if len(data) > MaxPayloadSize {
+	if len(data) > c.maxPayloadSize {
 		return nil, ContentEncoding_CONTENT_ENCODING_IDENTITY, "", ErrPayloadTooLarge
 	}
 
@@ -133,7 +165,13 @@ func (c *EnvelopeCodec) EncodePayload(data []byte) (payload []byte, encoding Con
 
 // DecodePayload decompresses payload if needed and verifies digest.
 func (c *EnvelopeCodec) DecodePayload(payload []byte, encoding ContentEncoding, expectedDigest string, expectedSize uint64) ([]byte, error) {
+	if expectedSize > uint64(c.maxPayloadSize) {
+		return nil, ErrDecompressionBomb
+	}
 	if encoding == ContentEncoding_CONTENT_ENCODING_IDENTITY {
+		if len(payload) > c.maxPayloadSize {
+			return nil, ErrDecompressionBomb
+		}
 		if expectedDigest != "" && computeDigest(payload) != expectedDigest {
 			return nil, ErrCorrupted
 		}
@@ -142,10 +180,6 @@ func (c *EnvelopeCodec) DecodePayload(payload []byte, encoding ContentEncoding, 
 
 	if encoding != ContentEncoding_CONTENT_ENCODING_ZSTD {
 		return nil, fmt.Errorf("unsupported encoding: %v", encoding)
-	}
-
-	if expectedSize > MaxDecompressedSize {
-		return nil, ErrDecompressionBomb
 	}
 
 	c.mu.RLock()
@@ -161,7 +195,7 @@ func (c *EnvelopeCodec) DecodePayload(payload []byte, encoding ContentEncoding, 
 		return nil, fmt.Errorf("decompressing payload: %w", err)
 	}
 
-	if uint64(len(decompressed)) > MaxDecompressedSize {
+	if len(decompressed) > c.maxPayloadSize {
 		return nil, ErrDecompressionBomb
 	}
 

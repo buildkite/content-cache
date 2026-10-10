@@ -2,6 +2,7 @@ package s3fifo
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -77,6 +78,22 @@ func mustParseHash(t *testing.T, hash string) contentcache.Hash {
 	return ref.Hash
 }
 
+type observingDeleteBackend struct {
+	backend.Backend
+	onDelete  func()
+	deleteErr error
+}
+
+func (b *observingDeleteBackend) Delete(ctx context.Context, key string) error {
+	if b.onDelete != nil {
+		b.onDelete()
+	}
+	if b.deleteErr != nil {
+		return b.deleteErr
+	}
+	return b.Backend.Delete(ctx, key)
+}
+
 func TestAdmitNewBlobGoesToSmall(t *testing.T) {
 	ctx := context.Background()
 	mgr, mdb, b := testManager(t, Config{})
@@ -91,6 +108,39 @@ func TestAdmitNewBlobGoesToSmall(t *testing.T) {
 	mgr.mu.Lock()
 	require.Equal(t, int64(len("hello world")), mgr.smallBytes)
 	mgr.mu.Unlock()
+}
+
+func TestNewManagerRejectsInvalidConfig(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		cfg  Config
+	}{
+		{
+			name: "negative max size",
+			cfg:  Config{MaxSize: -1},
+		},
+		{
+			name: "small queue percent above 100",
+			cfg:  Config{MaxSize: 100, SmallQueuePercent: 101},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+
+			mdb := metadb.NewBoltDB(metadb.WithNoSync(true))
+			require.NoError(t, mdb.Open(dir+"/meta.db"))
+			t.Cleanup(func() { mdb.Close() })
+
+			fsBackend, err := backend.NewFilesystem(dir + "/blobs")
+			require.NoError(t, err)
+
+			boltQueues, err := NewBoltQueues(mdb.DB())
+			require.NoError(t, err)
+
+			_, err = NewManager(boltQueues, mdb, fsBackend, tc.cfg)
+			require.Error(t, err)
+		})
+	}
 }
 
 func TestAdmitGhostHitGoesToMain(t *testing.T) {
@@ -140,6 +190,60 @@ func TestEvictOneHitWonder(t *testing.T) {
 	mgr.mu.Unlock()
 }
 
+func TestEvictionDeletesOutsideManagerLock(t *testing.T) {
+	ctx := context.Background()
+	mgr, mdb, b := testManager(t, Config{MaxSize: 5})
+
+	evictedHash := putBlob(t, ctx, mdb, b, "0123456789")
+	deleteCalled := false
+	managerUnlocked := false
+	queueUnlocked := false
+	mgr.backend = &observingDeleteBackend{
+		Backend: b,
+		onDelete: func() {
+			deleteCalled = true
+			managerUnlocked = mgr.mu.TryLock()
+			if managerUnlocked {
+				mgr.mu.Unlock()
+			}
+			queueUnlocked = mgr.queueMu.TryLock()
+			if queueUnlocked {
+				mgr.queueMu.Unlock()
+			}
+		},
+	}
+
+	mgr.Admit(ctx, evictedHash, 10)
+	mgr.maybeEvict(ctx)
+
+	require.True(t, deleteCalled)
+	require.True(t, managerUnlocked, "backend deletion must run outside the manager lock")
+	require.True(t, queueUnlocked, "backend deletion must run outside the queue lock")
+}
+
+func TestEvictionDeleteFailureRestoresQueueState(t *testing.T) {
+	ctx := context.Background()
+	mgr, mdb, b := testManager(t, Config{MaxSize: 5})
+
+	hash := putBlob(t, ctx, mdb, b, "0123456789")
+	mgr.backend = &observingDeleteBackend{Backend: b, deleteErr: errors.New("delete failed")}
+
+	mgr.Admit(ctx, hash, 10)
+	mgr.maybeEvict(ctx)
+
+	n, err := mgr.queues.Len(QueueSmall)
+	require.NoError(t, err)
+	require.Equal(t, 1, n)
+
+	state := mgr.snapshotState()
+	require.Equal(t, int64(10), state.smallBytes)
+	require.Equal(t, 1, state.smallLen)
+
+	exists, err := b.Exists(ctx, contentcache.BlobStorageKey(mustParseHash(t, hash)))
+	require.NoError(t, err)
+	require.True(t, exists)
+}
+
 func TestEvictPromotionToMain(t *testing.T) {
 	ctx := context.Background()
 	mgr, mdb, b := testManager(t, Config{MaxSize: 5})
@@ -184,7 +288,7 @@ func TestEvictMainSecondChance(t *testing.T) {
 	size := int64(len(content))
 
 	// Directly admit to main to bypass small queue logic.
-	require.NoError(t, mgr.queues.PushHead(QueueMain, hash))
+	pushHead(t, mgr.queues, QueueMain, hash)
 	mgr.mu.Lock()
 	mgr.mainBytes = size
 	mgr.mainLen = 1
@@ -217,7 +321,7 @@ func TestEvictMainCold(t *testing.T) {
 	hash := putBlob(t, ctx, mdb, b, content)
 	size := int64(len(content))
 
-	require.NoError(t, mgr.queues.PushHead(QueueMain, hash))
+	pushHead(t, mgr.queues, QueueMain, hash)
 	mgr.mu.Lock()
 	mgr.mainBytes = size
 	mgr.mainLen = 1
@@ -260,6 +364,84 @@ func TestPinnedBlobSkipped(t *testing.T) {
 
 	exists, _ := b.Exists(ctx, contentcache.BlobStorageKey(mustParseHash(t, hash)))
 	require.True(t, exists)
+}
+
+func TestPinnedOverlimitDoesNotImmediatelyReschedule(t *testing.T) {
+	ctx := context.Background()
+	mgr, mdb, b := testManager(t, Config{MaxSize: 5})
+	content := "0123456789"
+	hash := putBlob(t, ctx, mdb, b, content)
+	size := int64(len(content))
+
+	entry, err := mdb.GetBlob(ctx, hash)
+	require.NoError(t, err)
+	entry.RefCount = 1
+	require.NoError(t, mdb.PutBlob(ctx, entry))
+
+	mgr.Admit(ctx, hash, size)
+
+	// Admit signals once because the cache is over the size limit. Drain that
+	// signal so this test only observes whether maybeEvict requeues itself.
+	select {
+	case <-mgr.evictCh:
+	default:
+		require.Fail(t, "expected admission to signal eviction")
+	}
+
+	mgr.maybeEvict(ctx)
+
+	select {
+	case <-mgr.evictCh:
+		require.Fail(t, "pinned-only overlimit cache should wait for ticker or a later admission, not hot-loop")
+	default:
+	}
+}
+
+func TestPinnedTailDoesNotBlockEvictableSmallCandidate(t *testing.T) {
+	ctx := context.Background()
+	mgr, mdb, b := testManager(t, Config{MaxSize: 15})
+
+	pinnedHash := putBlob(t, ctx, mdb, b, "pinned-blob")
+	pinnedSize := int64(len("pinned-blob"))
+	evictableHash := putBlob(t, ctx, mdb, b, "evictable-blob")
+	evictableSize := int64(len("evictable-blob"))
+
+	entry, err := mdb.GetBlob(ctx, pinnedHash)
+	require.NoError(t, err)
+	entry.RefCount = 1
+	require.NoError(t, mdb.PutBlob(ctx, entry))
+
+	mgr.Admit(ctx, pinnedHash, pinnedSize)
+	mgr.Admit(ctx, evictableHash, evictableSize)
+
+	mgr.maybeEvict(ctx)
+
+	exists, err := b.Exists(ctx, contentcache.BlobStorageKey(mustParseHash(t, pinnedHash)))
+	require.NoError(t, err)
+	require.True(t, exists, "pinned blob must remain")
+
+	exists, err = b.Exists(ctx, contentcache.BlobStorageKey(mustParseHash(t, evictableHash)))
+	require.NoError(t, err)
+	require.False(t, exists, "evictable blob should be considered after the pinned tail is requeued")
+}
+
+func TestDuplicateAdmitDoesNotDoubleCountQueueState(t *testing.T) {
+	ctx := context.Background()
+	mgr, mdb, b := testManager(t, Config{})
+	hash := putBlob(t, ctx, mdb, b, "hello world")
+	size := int64(len("hello world"))
+
+	mgr.Admit(ctx, hash, size)
+	mgr.Admit(ctx, hash, size)
+
+	n, err := mgr.queues.Len(QueueSmall)
+	require.NoError(t, err)
+	require.Equal(t, 1, n)
+
+	mgr.mu.Lock()
+	defer mgr.mu.Unlock()
+	require.Equal(t, size, mgr.smallBytes)
+	require.Equal(t, 1, mgr.smallLen)
 }
 
 func TestManagerRemove(t *testing.T) {
@@ -310,6 +492,33 @@ func TestRecomputeBytes(t *testing.T) {
 	require.Equal(t, int64(0), mgr.mainBytes)
 }
 
+func TestNewManagerSignalsEvictionForPersistedOverlimitState(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+
+	mdb := metadb.NewBoltDB(metadb.WithNoSync(true))
+	require.NoError(t, mdb.Open(dir+"/meta.db"))
+	t.Cleanup(func() { require.NoError(t, mdb.Close()) })
+
+	fsBackend, err := backend.NewFilesystem(dir + "/blobs")
+	require.NoError(t, err)
+	hash := putBlob(t, ctx, mdb, fsBackend, "0123456789")
+
+	queues, err := NewBoltQueues(mdb.DB())
+	require.NoError(t, err)
+	_, err = queues.PushHead(QueueSmall, hash)
+	require.NoError(t, err)
+
+	mgr, err := NewManager(queues, mdb, fsBackend, Config{MaxSize: 5})
+	require.NoError(t, err)
+
+	select {
+	case <-mgr.evictCh:
+	default:
+		require.Fail(t, "persisted over-limit state must schedule eviction at startup")
+	}
+}
+
 func TestOrphanedQueueEntryCleanup(t *testing.T) {
 	ctx := context.Background()
 
@@ -318,7 +527,7 @@ func TestOrphanedQueueEntryCleanup(t *testing.T) {
 
 		// A hash that exists in the queue but has no MetaDB entry.
 		orphanHash := strings.Repeat("a", 64)
-		require.NoError(t, mgr.queues.PushHead(QueueSmall, orphanHash))
+		pushHead(t, mgr.queues, QueueSmall, orphanHash)
 		mgr.mu.Lock()
 		mgr.smallBytes = 10 // force over-limit so maybeEvict acts
 		mgr.smallLen = 1
@@ -334,7 +543,7 @@ func TestOrphanedQueueEntryCleanup(t *testing.T) {
 		mgr, _, _ := testManager(t, Config{MaxSize: 5, SmallQueuePercent: 10})
 
 		orphanHash := strings.Repeat("b", 64)
-		require.NoError(t, mgr.queues.PushHead(QueueMain, orphanHash))
+		pushHead(t, mgr.queues, QueueMain, orphanHash)
 		mgr.mu.Lock()
 		mgr.mainBytes = 10
 		mgr.mainLen = 1

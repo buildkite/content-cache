@@ -38,6 +38,13 @@ import (
 
 // Config holds server configuration.
 type Config struct {
+	// MetadataMaxSize bounds uncompressed metadata writes and reads in bytes.
+	// Zero selects metadb.MaxPayloadSize (64MiB).
+	MetadataMaxSize int
+	// MetadataBatchSize and MetadataBatchDelay tune concurrent bbolt writes.
+	// Zero selects defaults; size 1 disables batching.
+	MetadataBatchSize  int
+	MetadataBatchDelay time.Duration
 	// Address to listen on (e.g., ":8080")
 	Address string
 
@@ -224,7 +231,7 @@ func openMetaBackend(cfg Config) (metadb.MetaDB, func() (s3fifo.Queues, error), 
 	if dsn == "" {
 		dsn = path.Join(cfg.StoragePath, "metadata.db")
 	}
-	boltDB := metadb.NewBoltDB()
+	boltDB := metadb.NewBoltDB(metadb.WithBatchSize(cfg.MetadataBatchSize), metadb.WithBatchDelay(cfg.MetadataBatchDelay))
 	if err := boltDB.Open(dsn); err != nil {
 		return nil, nil, fmt.Errorf("opening bolt metadata database: %w", err)
 	}
@@ -266,6 +273,15 @@ func validateGitUpstreamAuth(cfg Config) error {
 
 // New creates a new server with the given configuration.
 func New(cfg Config) (*Server, error) {
+	if cfg.MetadataBatchSize < 0 || cfg.MetadataBatchDelay < 0 {
+		return nil, fmt.Errorf("metadata batch size and delay must not be negative")
+	}
+	if cfg.MetadataMaxSize == 0 {
+		cfg.MetadataMaxSize = metadb.MaxPayloadSize
+	}
+	if err := metadb.ValidateMaxPayloadSize(cfg.MetadataMaxSize); err != nil {
+		return nil, err
+	}
 	if cfg.AuthToken != "" && cfg.OIDCValidator != nil {
 		return nil, fmt.Errorf("AuthToken and OIDCValidator are mutually exclusive")
 	}
@@ -299,7 +315,7 @@ func New(cfg Config) (*Server, error) {
 	}
 
 	// Create a single shared EnvelopeCodec (zstd encoder/decoder) for all EnvelopeIndex instances.
-	sharedCodec, err := metadb.NewEnvelopeCodec()
+	sharedCodec, err := metadb.NewEnvelopeCodec(metadb.WithMaxPayloadSize(cfg.MetadataMaxSize))
 	if err != nil {
 		return nil, fmt.Errorf("creating envelope codec: %w", err)
 	}
@@ -1101,7 +1117,10 @@ func (s *Server) Shutdown(ctx context.Context) error {
 		}
 	}
 
-	return s.httpServer.Shutdown(ctx)
+	err := s.httpServer.Shutdown(ctx)
+	// Metadata fetches may outlive a cancelled client; stop those workers too.
+	s.npm.Close()
+	return err
 }
 
 // Address returns the server's listen address.

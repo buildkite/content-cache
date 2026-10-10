@@ -1,0 +1,10 @@
+goos: linux
+goarch: amd64
+pkg: github.com/buildkite/content-cache/protocol/npm
+cpu: Intel(R) Xeon(R) Gold 6240 CPU @ 2.60GHz
+BenchmarkNPMMetadataDisk-4   	    2588	    402707 ns/op	  81.47 MB/s	   22953 B/op	      98 allocs/op
+BenchmarkNPMMetadataDisk-4   	    2468	    408077 ns/op	  80.40 MB/s	   21391 B/op	      98 allocs/op
+BenchmarkNPMMetadataDisk-4   	    2372	    450012 ns/op	  72.90 MB/s	   21355 B/op	      95 allocs/op
+BenchmarkNPMMetadataDisk-4   	    2356	    474677 ns/op	  69.12 MB/s	   20027 B/op	      95 allocs/op
+BenchmarkNPMMetadataDisk-4   	    2127	    475145 ns/op	  69.05 MB/s	   26842 B/op	      97 allocs/op
+PASS

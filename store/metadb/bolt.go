@@ -6,20 +6,32 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"sync/atomic"
 	"time"
 
+	"github.com/buildkite/content-cache/telemetry"
 	"go.etcd.io/bbolt"
 	"google.golang.org/protobuf/proto"
 )
 
 // BoltDB implements MetaDB using bbolt.
 type BoltDB struct {
-	db     *bbolt.DB
-	codec  *EnvelopeCodec // shared codec for all EnvelopeIndex instances
-	logger *slog.Logger
-	now    func() time.Time
-	noSync bool // disables fsync per transaction (for testing only)
+	db            *bbolt.DB
+	codec         *EnvelopeCodec // shared codec for all EnvelopeIndex instances
+	logger        *slog.Logger
+	now           func() time.Time
+	noSync        bool // disables fsync per transaction (for testing only)
+	batchSize     int
+	batchDelay    time.Duration
+	activeWriters atomic.Int64
 }
+
+const (
+	// DefaultBatchSize bounds callbacks per durable transaction.
+	DefaultBatchSize = 100
+	// DefaultBatchDelay only applies when writers overlap.
+	DefaultBatchDelay = time.Millisecond
+)
 
 // BoltDBOption configures a BoltDB instance.
 type BoltDBOption func(*BoltDB)
@@ -47,11 +59,31 @@ func WithNoSync(noSync bool) BoltDBOption {
 	}
 }
 
+// WithBatchSize sets the maximum number of callbacks in one bbolt batch.
+func WithBatchSize(size int) BoltDBOption {
+	return func(b *BoltDB) {
+		if size > 0 {
+			b.batchSize = size
+		}
+	}
+}
+
+// WithBatchDelay sets the maximum time bbolt waits before starting a batch.
+func WithBatchDelay(delay time.Duration) BoltDBOption {
+	return func(b *BoltDB) {
+		if delay > 0 {
+			b.batchDelay = delay
+		}
+	}
+}
+
 // NewBoltDB creates a new BoltDB instance with options.
 func NewBoltDB(opts ...BoltDBOption) *BoltDB {
 	b := &BoltDB{
-		logger: slog.Default(),
-		now:    time.Now,
+		logger:     slog.Default(),
+		now:        time.Now,
+		batchSize:  DefaultBatchSize,
+		batchDelay: DefaultBatchDelay,
 	}
 	for _, opt := range opts {
 		opt(b)
@@ -69,6 +101,8 @@ func (b *BoltDB) Open(path string) error {
 		return fmt.Errorf("opening database: %w", err)
 	}
 	b.db = db
+	b.db.MaxBatchSize = b.batchSize
+	b.db.MaxBatchDelay = b.batchDelay
 
 	if err := b.createBuckets(); err != nil {
 		_ = db.Close()
@@ -83,8 +117,58 @@ func (b *BoltDB) Open(path string) error {
 	}
 	b.codec = codec
 
-	b.logger.Debug("opened metadb", "path", path, "noSync", b.noSync)
+	b.recordStats(context.Background(), b.currentTxID())
+	b.logger.Debug("opened metadb", "path", path, "noSync", b.noSync, "batchSize", b.batchSize, "batchDelay", b.batchDelay)
 	return nil
+}
+
+func (b *BoltDB) batch(ctx context.Context, operation string, fn func(*bbolt.Tx) error) error {
+	start := time.Now()
+	var callbackDuration time.Duration
+	var txID int
+	// A lone caller commits immediately. Concurrent callers can coalesce;
+	// callbacks must be replay-safe because bbolt retries failed batches.
+	active := b.activeWriters.Add(1)
+	defer b.activeWriters.Add(-1)
+	write := b.db.Batch
+	if active == 1 || b.db.MaxBatchSize == 1 {
+		write = b.db.Update
+	}
+	err := write(func(tx *bbolt.Tx) error {
+		callbackStart := time.Now()
+		txID = tx.ID()
+		err := fn(tx)
+		callbackDuration += time.Since(callbackStart)
+		return err
+	})
+	outcome := "success"
+	if err != nil {
+		outcome = "error"
+	}
+	telemetry.RecordMetaDBBatch(ctx, operation, outcome, time.Since(start), callbackDuration)
+	if err == nil {
+		b.recordStats(ctx, txID)
+	}
+	return err
+}
+
+func (b *BoltDB) currentTxID() int {
+	var txID int
+	_ = b.db.View(func(tx *bbolt.Tx) error {
+		txID = tx.ID()
+		return nil
+	})
+	return txID
+}
+
+func (b *BoltDB) recordStats(ctx context.Context, txID int) {
+	stats := b.db.Stats()
+	telemetry.UpdateMetaDBStats(
+		ctx,
+		int64(txID),
+		stats.TxStats.GetWrite(),
+		stats.TxStats.GetWriteTime(),
+	)
 }
 
 func (b *BoltDB) createBuckets() error {
@@ -157,8 +241,8 @@ func (b *BoltDB) GetMeta(_ context.Context, protocol, key string) ([]byte, error
 }
 
 // PutMeta stores protocol metadata with TTL.
-func (b *BoltDB) PutMeta(_ context.Context, protocol, key string, data []byte, ttl time.Duration) error {
-	return b.db.Update(func(tx *bbolt.Tx) error {
+func (b *BoltDB) PutMeta(ctx context.Context, protocol, key string, data []byte, ttl time.Duration) error {
+	return b.batch(ctx, "put_meta", func(tx *bbolt.Tx) error {
 		metaBucket := tx.Bucket(bucketMeta)
 		if metaBucket == nil {
 			return fmt.Errorf("meta bucket not found")
@@ -242,8 +326,8 @@ func (b *BoltDB) updateMetaExpiryIndex(tx *bbolt.Tx, protocol, key string, expir
 }
 
 // DeleteMeta removes protocol metadata.
-func (b *BoltDB) DeleteMeta(_ context.Context, protocol, key string) error {
-	return b.db.Update(func(tx *bbolt.Tx) error {
+func (b *BoltDB) DeleteMeta(ctx context.Context, protocol, key string) error {
+	return b.batch(ctx, "delete_meta", func(tx *bbolt.Tx) error {
 		metaBucket := tx.Bucket(bucketMeta)
 		if metaBucket == nil {
 			return nil
@@ -304,8 +388,8 @@ func (b *BoltDB) GetBlob(_ context.Context, hash string) (*BlobEntry, error) {
 }
 
 // PutBlob stores blob metadata.
-func (b *BoltDB) PutBlob(_ context.Context, entry *BlobEntry) error {
-	return b.db.Update(func(tx *bbolt.Tx) error {
+func (b *BoltDB) PutBlob(ctx context.Context, entry *BlobEntry) error {
+	return b.batch(ctx, "put_blob", func(tx *bbolt.Tx) error {
 		hashBucket := tx.Bucket(bucketBlobsByHash)
 		if hashBucket == nil {
 			return fmt.Errorf("blobs_by_hash bucket not found")
@@ -326,8 +410,8 @@ func (b *BoltDB) PutBlob(_ context.Context, entry *BlobEntry) error {
 }
 
 // DeleteBlob removes blob metadata.
-func (b *BoltDB) DeleteBlob(_ context.Context, hash string) error {
-	return b.db.Update(func(tx *bbolt.Tx) error {
+func (b *BoltDB) DeleteBlob(ctx context.Context, hash string) error {
+	return b.batch(ctx, "delete_blob", func(tx *bbolt.Tx) error {
 		hashBucket := tx.Bucket(bucketBlobsByHash)
 		if hashBucket == nil {
 			return nil
@@ -339,7 +423,7 @@ func (b *BoltDB) DeleteBlob(_ context.Context, hash string) error {
 
 // IncrementBlobRef increments the reference count for a blob.
 func (b *BoltDB) IncrementBlobRef(ctx context.Context, hash string) error {
-	return b.db.Update(func(tx *bbolt.Tx) error {
+	return b.batch(ctx, "increment_blob_ref", func(tx *bbolt.Tx) error {
 		bucket := tx.Bucket(bucketBlobsByHash)
 		if bucket == nil {
 			return ErrNotFound
@@ -368,7 +452,7 @@ func (b *BoltDB) IncrementBlobRef(ctx context.Context, hash string) error {
 
 // DecrementBlobRef decrements the reference count for a blob.
 func (b *BoltDB) DecrementBlobRef(ctx context.Context, hash string) error {
-	return b.db.Update(func(tx *bbolt.Tx) error {
+	return b.batch(ctx, "decrement_blob_ref", func(tx *bbolt.Tx) error {
 		bucket := tx.Bucket(bucketBlobsByHash)
 		if bucket == nil {
 			return ErrNotFound
@@ -400,9 +484,9 @@ func (b *BoltDB) DecrementBlobRef(ctx context.Context, hash string) error {
 // TouchBlob updates the last access time for a blob and increments the access counter.
 // Returns the new access count (capped at 3 for S3-FIFO).
 // Returns (0, ErrNotFound) if the blob hash does not exist in the database.
-func (b *BoltDB) TouchBlob(_ context.Context, hash string) (int, error) {
+func (b *BoltDB) TouchBlob(ctx context.Context, hash string) (int, error) {
 	var newCount int
-	err := b.db.Update(func(tx *bbolt.Tx) error {
+	err := b.batch(ctx, "touch_blob", func(tx *bbolt.Tx) error {
 		hashBucket := tx.Bucket(bucketBlobsByHash)
 		if hashBucket == nil {
 			return ErrNotFound
@@ -557,8 +641,8 @@ func (b *BoltDB) GetUnreferencedBlobs(_ context.Context, before time.Time, limit
 // - added = newRefs - oldRefs → increment blob refcounts
 // - removed = oldRefs - newRefs → decrement blob refcounts
 // This is safe for overwrites and idempotent for repeated calls with the same refs.
-func (b *BoltDB) PutMetaWithRefs(_ context.Context, protocol, key string, data []byte, ttl time.Duration, refs []string) error {
-	return b.db.Update(func(tx *bbolt.Tx) error {
+func (b *BoltDB) PutMetaWithRefs(ctx context.Context, protocol, key string, data []byte, ttl time.Duration, refs []string) error {
+	return b.batch(ctx, "put_meta_with_refs", func(tx *bbolt.Tx) error {
 		metaBucket := tx.Bucket(bucketMeta)
 		if metaBucket == nil {
 			return fmt.Errorf("meta bucket not found")
@@ -623,8 +707,8 @@ func (b *BoltDB) PutMetaWithRefs(_ context.Context, protocol, key string, data [
 }
 
 // DeleteMetaWithRefs removes metadata and decrements all associated blob refs.
-func (b *BoltDB) DeleteMetaWithRefs(_ context.Context, protocol, key string) error {
-	return b.db.Update(func(tx *bbolt.Tx) error {
+func (b *BoltDB) DeleteMetaWithRefs(ctx context.Context, protocol, key string) error {
+	return b.batch(ctx, "delete_meta_with_refs", func(tx *bbolt.Tx) error {
 		metaBucket := tx.Bucket(bucketMeta)
 		if metaBucket == nil {
 			return nil
@@ -822,7 +906,7 @@ var _ MetaDB = (*BoltDB)(nil)
 // PutEnvelope stores a metadata envelope with blob reference tracking.
 // Handles transactional ref updates: computes diff between old and new refs,
 // increments new refs, decrements removed refs.
-func (b *BoltDB) PutEnvelope(_ context.Context, protocol, kind, key string, env *MetadataEnvelope) error {
+func (b *BoltDB) PutEnvelope(ctx context.Context, protocol, kind, key string, env *MetadataEnvelope) error {
 	if err := ValidateEnvelope(env); err != nil {
 		return fmt.Errorf("validating envelope: %w", err)
 	}
@@ -836,7 +920,7 @@ func (b *BoltDB) PutEnvelope(_ context.Context, protocol, kind, key string, env 
 		return fmt.Errorf("marshaling envelope: %w", err)
 	}
 
-	return b.db.Update(func(tx *bbolt.Tx) error {
+	return b.batch(ctx, "put_envelope", func(tx *bbolt.Tx) error {
 		envBucket := tx.Bucket(bucketEnvelopes)
 		if envBucket == nil {
 			return fmt.Errorf("envelopes bucket not found")
@@ -920,8 +1004,8 @@ func (b *BoltDB) GetEnvelope(_ context.Context, protocol, kind, key string) (*Me
 }
 
 // DeleteEnvelope removes a metadata envelope and decrements all associated blob refs.
-func (b *BoltDB) DeleteEnvelope(_ context.Context, protocol, kind, key string) error {
-	return b.db.Update(func(tx *bbolt.Tx) error {
+func (b *BoltDB) DeleteEnvelope(ctx context.Context, protocol, kind, key string) error {
+	return b.batch(ctx, "delete_envelope", func(tx *bbolt.Tx) error {
 		envBucket := tx.Bucket(bucketEnvelopes)
 		if envBucket == nil {
 			return nil

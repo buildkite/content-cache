@@ -3,10 +3,14 @@
 package s3fifo
 
 import (
+	"context"
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"sync/atomic"
+	"time"
 
+	"github.com/buildkite/content-cache/telemetry"
 	"go.etcd.io/bbolt"
 )
 
@@ -33,12 +37,12 @@ var (
 // Queues is the interface for S3-FIFO queue and ghost set operations.
 // Implementations must be safe to call concurrently.
 type Queues interface {
-	PushHead(queue, hash string) error
+	PushHead(queue, hash string) (bool, error)
 	PopTail(queue string) (string, error)
 	Remove(queue, hash string) (bool, error)
 	Len(queue string) (int, error)
 	ForEach(queue string, fn func(hash string) error) error
-	AdmitGhostHit(hash string) error
+	AdmitGhostHit(hash string) (bool, error)
 	GhostContains(hash string) (bool, error)
 	GhostAdd(hash string) error
 	GhostRemove(hash string) error
@@ -48,9 +52,10 @@ type Queues interface {
 
 // BoltQueues provides bbolt-backed FIFO queue and ghost set operations for S3-FIFO.
 // All methods are safe to call concurrently (bbolt handles its own locking),
-// but the S3-FIFO Manager serialises mutation calls with its own mutex.
+// and the S3-FIFO Manager coordinates membership changes with queueMu.
 type BoltQueues struct {
-	db *bbolt.DB
+	db            *bbolt.DB
+	activeWriters atomic.Int64
 }
 
 // NewBoltQueues creates a BoltQueues instance backed by the given bbolt database and
@@ -58,6 +63,38 @@ type BoltQueues struct {
 func NewBoltQueues(db *bbolt.DB) (*BoltQueues, error) {
 	q := &BoltQueues{db: db}
 	return q, q.createBuckets()
+}
+
+func (q *BoltQueues) batch(operation string, fn func(*bbolt.Tx) error) error {
+	ctx := context.Background()
+	start := time.Now()
+	var callbackDuration time.Duration
+	var txID int
+	// A lone caller commits immediately. Concurrent callers can coalesce;
+	// callbacks must be replay-safe because bbolt retries failed batches.
+	active := q.activeWriters.Add(1)
+	defer q.activeWriters.Add(-1)
+	write := q.db.Batch
+	if active == 1 || q.db.MaxBatchSize == 1 {
+		write = q.db.Update
+	}
+	err := write(func(tx *bbolt.Tx) error {
+		callbackStart := time.Now()
+		txID = tx.ID()
+		err := fn(tx)
+		callbackDuration += time.Since(callbackStart)
+		return err
+	})
+	outcome := "success"
+	if err != nil {
+		outcome = "error"
+	}
+	telemetry.RecordMetaDBBatch(ctx, operation, outcome, time.Since(start), callbackDuration)
+	if err == nil {
+		stats := q.db.Stats()
+		telemetry.UpdateMetaDBStats(ctx, int64(txID), stats.TxStats.GetWrite(), stats.TxStats.GetWriteTime())
+	}
+	return err
 }
 
 func (q *BoltQueues) createBuckets() error {
@@ -77,17 +114,21 @@ func (q *BoltQueues) createBuckets() error {
 
 // PushHead inserts hash at the head (newest position) of the named queue.
 // Subsequent PopTail calls return older entries first.
-func (q *BoltQueues) PushHead(queue, hash string) error {
-	return q.db.Update(func(tx *bbolt.Tx) error {
-		return txPushHead(tx, queueFwdName(queue), queueRevName(queue), hash)
+func (q *BoltQueues) PushHead(queue, hash string) (bool, error) {
+	var replaced bool
+	err := q.batch("s3fifo_push_head", func(tx *bbolt.Tx) error {
+		var err error
+		replaced, err = txPushHead(tx, queueFwdName(queue), queueRevName(queue), hash)
+		return err
 	})
+	return replaced, err
 }
 
 // PopTail removes and returns the oldest hash from the named queue.
 // Returns ErrQueueEmpty when the queue has no entries.
 func (q *BoltQueues) PopTail(queue string) (string, error) {
 	var hash string
-	err := q.db.Update(func(tx *bbolt.Tx) error {
+	err := q.batch("s3fifo_pop_tail", func(tx *bbolt.Tx) error {
 		var err error
 		hash, err = txPopTail(tx, queueFwdName(queue), queueRevName(queue))
 		return err
@@ -99,7 +140,8 @@ func (q *BoltQueues) PopTail(queue string) (string, error) {
 // Returns (true, nil) if the hash was present and removed, (false, nil) if absent.
 func (q *BoltQueues) Remove(queue, hash string) (bool, error) {
 	var removed bool
-	err := q.db.Update(func(tx *bbolt.Tx) error {
+	err := q.batch("s3fifo_remove", func(tx *bbolt.Tx) error {
+		removed = false
 		fwd := tx.Bucket(queueFwdName(queue))
 		rev := tx.Bucket(queueRevName(queue))
 
@@ -148,17 +190,21 @@ func (q *BoltQueues) ForEach(queue string, fn func(hash string) error) error {
 }
 
 // AdmitGhostHit atomically removes hash from the ghost set and inserts it at
-// the head of the main queue. Called on a ghost cache hit to bypass small queue.
-func (q *BoltQueues) AdmitGhostHit(hash string) error {
-	return q.db.Update(func(tx *bbolt.Tx) error {
+// the head of the main queue. It reports whether the hash was still present;
+// concurrent admissions can observe the same ghost entry before the batch runs.
+func (q *BoltQueues) AdmitGhostHit(hash string) (bool, error) {
+	var admitted bool
+	err := q.batch("s3fifo_ghost_hit", func(tx *bbolt.Tx) error {
+		admitted = false
 		ghostBucket := tx.Bucket(bucketGhost)
 		seqBucket := tx.Bucket(bucketGhostBySeq)
 
 		seqVal := ghostBucket.Get([]byte(hash))
 		if seqVal == nil {
-			// Not in ghost (possible race on restart); fall through to normal small admission.
+			// Another concurrent admission already consumed the ghost entry.
 			return nil
 		}
+		admitted = true
 		seqKey := make([]byte, len(seqVal))
 		copy(seqKey, seqVal)
 
@@ -169,8 +215,10 @@ func (q *BoltQueues) AdmitGhostHit(hash string) error {
 			return err
 		}
 
-		return txPushHead(tx, bucketMain, bucketMainByHash, hash)
+		_, err := txPushHead(tx, bucketMain, bucketMainByHash, hash)
+		return err
 	})
+	return admitted, err
 }
 
 // GhostContains reports whether hash is currently in the ghost set.
@@ -188,9 +236,17 @@ func (q *BoltQueues) GhostContains(hash string) (bool, error) {
 
 // GhostAdd inserts hash into the ghost set with the next sequence number.
 func (q *BoltQueues) GhostAdd(hash string) error {
-	return q.db.Update(func(tx *bbolt.Tx) error {
+	return q.batch("s3fifo_ghost_add", func(tx *bbolt.Tx) error {
 		ghostBucket := tx.Bucket(bucketGhost)
 		seqBucket := tx.Bucket(bucketGhostBySeq)
+
+		if oldSeq := ghostBucket.Get([]byte(hash)); oldSeq != nil {
+			oldSeqKey := make([]byte, len(oldSeq))
+			copy(oldSeqKey, oldSeq)
+			if err := seqBucket.Delete(oldSeqKey); err != nil {
+				return err
+			}
+		}
 
 		seq, err := seqBucket.NextSequence()
 		if err != nil {
@@ -207,7 +263,7 @@ func (q *BoltQueues) GhostAdd(hash string) error {
 
 // GhostRemove removes hash from the ghost set. No-op if not present.
 func (q *BoltQueues) GhostRemove(hash string) error {
-	return q.db.Update(func(tx *bbolt.Tx) error {
+	return q.batch("s3fifo_ghost_remove", func(tx *bbolt.Tx) error {
 		ghostBucket := tx.Bucket(bucketGhost)
 		seqBucket := tx.Bucket(bucketGhostBySeq)
 
@@ -275,20 +331,30 @@ func (q *BoltQueues) GhostLen() (int, error) {
 
 // txPushHead inserts hash into the queue using the next monotonic sequence number.
 // Must be called inside a bbolt Update transaction.
-func txPushHead(tx *bbolt.Tx, fwdName, revName []byte, hash string) error {
+func txPushHead(tx *bbolt.Tx, fwdName, revName []byte, hash string) (bool, error) {
 	fwd := tx.Bucket(fwdName)
 	rev := tx.Bucket(revName)
 
+	replaced := false
+	if oldSeq := rev.Get([]byte(hash)); oldSeq != nil {
+		replaced = true
+		oldSeqKey := make([]byte, len(oldSeq))
+		copy(oldSeqKey, oldSeq)
+		if err := fwd.Delete(oldSeqKey); err != nil {
+			return false, err
+		}
+	}
+
 	seq, err := fwd.NextSequence()
 	if err != nil {
-		return err
+		return false, err
 	}
 	seqKey := encodeSeq(seq)
 
 	if err := fwd.Put(seqKey, []byte(hash)); err != nil {
-		return err
+		return false, err
 	}
-	return rev.Put([]byte(hash), seqKey)
+	return replaced, rev.Put([]byte(hash), seqKey)
 }
 
 // txPopTail removes and returns the entry with the lowest sequence number

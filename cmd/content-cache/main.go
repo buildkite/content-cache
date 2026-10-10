@@ -19,6 +19,7 @@ import (
 	"github.com/buildkite/content-cache/credentials"
 	"github.com/buildkite/content-cache/credentials/opprovider"
 	"github.com/buildkite/content-cache/server"
+	"github.com/buildkite/content-cache/store/metadb"
 	"github.com/buildkite/content-cache/telemetry"
 	"github.com/lmittmann/tint"
 )
@@ -73,7 +74,10 @@ type ServeCmd struct {
 	GCInterval          time.Duration `kong:"name='gc-interval',default='1h',env='GC_INTERVAL',help='How often to run garbage collection',group='Cache'"`
 	GCStartupDelay      time.Duration `kong:"name='gc-startup-delay',default='5m',env='GC_STARTUP_DELAY',help='Delay before first GC run after startup',group='Cache'"`
 
-	MetadataDSN string `kong:"name='metadata-dsn',env='METADATA_DSN',help='Metadata database path (default: <storage>/metadata.db)',group='Storage'"`
+	MetadataDSN        string        `kong:"name='metadata-dsn',env='METADATA_DSN',help='Metadata database path (default: <storage>/metadata.db)',group='Storage'"`
+	MetadataMaxSize    int           `kong:"name='metadata-max-size',default='67108864',env='METADATA_MAX_SIZE',help='Maximum uncompressed metadata entry size in bytes; applies to writes and reads (1..268435456)',group='Storage'"`
+	MetadataBatchSize  int           `kong:"name='metadata-batch-size',default='100',env='METADATA_BATCH_SIZE',help='Maximum callbacks per bbolt batch; 1 disables batching',group='Storage'"`
+	MetadataBatchDelay time.Duration `kong:"name='metadata-batch-delay',default='1ms',env='METADATA_BATCH_DELAY',help='Maximum wait for concurrent bbolt writes; lone writers commit immediately',group='Storage'"`
 
 	LogLevel  string `kong:"name='log-level',default='info',env='LOG_LEVEL',enum='debug,info,warn,error',help='Log level',group='Logging'"`
 	LogFormat string `kong:"name='log-format',default='text',env='LOG_FORMAT',enum='text,json',help='Log format',group='Logging'"`
@@ -117,6 +121,12 @@ func run() error {
 // An unset --maven-upstream falls back to the maven package default, so we
 // only validate when the operator explicitly supplied values.
 func (cmd *ServeCmd) Validate() error {
+	if cmd.MetadataBatchSize < 1 || cmd.MetadataBatchDelay <= 0 {
+		return fmt.Errorf("--metadata-batch-size and --metadata-batch-delay must be positive")
+	}
+	if err := metadb.ValidateMaxPayloadSize(cmd.MetadataMaxSize); err != nil {
+		return fmt.Errorf("--metadata-max-size: %w", err)
+	}
 	seen := make(map[string]struct{}, len(cmd.MavenUpstream))
 	for i, raw := range cmd.MavenUpstream {
 		if err := validateHTTPURL(raw); err != nil {
@@ -259,6 +269,9 @@ func (cmd *ServeCmd) Run() error {
 
 	// Create server
 	cfg := server.Config{
+		MetadataMaxSize:                    cmd.MetadataMaxSize,
+		MetadataBatchSize:                  cmd.MetadataBatchSize,
+		MetadataBatchDelay:                 cmd.MetadataBatchDelay,
 		Address:                            cmd.ListenAddress,
 		StoragePath:                        cmd.Storage,
 		TLSCertFile:                        cmd.TLSCertFile,

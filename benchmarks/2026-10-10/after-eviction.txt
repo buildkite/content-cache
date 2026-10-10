@@ -1,0 +1,10 @@
+goos: linux
+goarch: amd64
+pkg: github.com/buildkite/content-cache/store/s3fifo
+cpu: Intel(R) Xeon(R) Gold 6240 CPU @ 2.60GHz
+BenchmarkAdmissionDuringEviction-4   	     100	     38065 ns/op	        33.00 p50-us	        59.00 p95-us	    9016 B/op	      73 allocs/op
+BenchmarkAdmissionDuringEviction-4   	     100	     38437 ns/op	        33.00 p50-us	        49.00 p95-us	    9023 B/op	      73 allocs/op
+BenchmarkAdmissionDuringEviction-4   	     100	     37660 ns/op	        33.00 p50-us	        50.00 p95-us	    9072 B/op	      73 allocs/op
+BenchmarkAdmissionDuringEviction-4   	     100	     34152 ns/op	        31.00 p50-us	        47.00 p95-us	    9016 B/op	      73 allocs/op
+BenchmarkAdmissionDuringEviction-4   	     100	     36623 ns/op	        32.00 p50-us	        53.00 p95-us	    9062 B/op	      73 allocs/op
+PASS

@@ -1,0 +1,87 @@
+{
+  "before": {
+    "BenchmarkMetadataDisk/writers=1-4": {
+      "ns/op": 1288616.0,
+      "commits/op": 1.0,
+      "p50-us": 1570.0,
+      "p95-us": 1667.0,
+      "B/op": 43783.0,
+      "allocs/op": 155.0
+    },
+    "BenchmarkMetadataDisk/writers=4-4": {
+      "ns/op": 1315665.0,
+      "commits/op": 1.0,
+      "p50-us": 5319.0,
+      "p95-us": 6433.0,
+      "B/op": 43830.0,
+      "allocs/op": 155.0
+    },
+    "BenchmarkMetadataDisk/writers=16-4": {
+      "ns/op": 1242365.0,
+      "commits/op": 1.0,
+      "p50-us": 19918.0,
+      "p95-us": 21668.0,
+      "B/op": 43811.0,
+      "allocs/op": 155.0
+    },
+    "BenchmarkNPMMetadataDisk-4": {
+      "ns/op": 965134.0,
+      "MB/s": 33.99,
+      "B/op": 65050.0,
+      "allocs/op": 162.0
+    },
+    "BenchmarkAdmissionDuringEviction-4": {
+      "ns/op": 20373241.0,
+      "p50-us": 20345.0,
+      "p95-us": 20475.0,
+      "B/op": 31134.0,
+      "allocs/op": 211.0
+    }
+  },
+  "after": {
+    "BenchmarkMetadataDisk/writers=1-4": {
+      "ns/op": 1324709.0,
+      "commits/op": 1.0,
+      "p50-us": 1553.0,
+      "p95-us": 1674.0,
+      "B/op": 43919.0,
+      "allocs/op": 158.0
+    },
+    "BenchmarkMetadataDisk/writers=4-4": {
+      "ns/op": 444929.0,
+      "commits/op": 0.2505,
+      "p50-us": 1753.0,
+      "p95-us": 1967.0,
+      "B/op": 22392.0,
+      "allocs/op": 70.0
+    },
+    "BenchmarkMetadataDisk/writers=16-4": {
+      "ns/op": 131536.0,
+      "commits/op": 0.06263,
+      "p50-us": 2016.0,
+      "p95-us": 2694.0,
+      "B/op": 15266.0,
+      "allocs/op": 45.0
+    },
+    "BenchmarkNPMMetadataDisk-4": {
+      "ns/op": 450012.0,
+      "MB/s": 72.9,
+      "B/op": 21391.0,
+      "allocs/op": 97.0
+    },
+    "BenchmarkAdmissionDuringEviction-4": {
+      "ns/op": 37660.0,
+      "p50-us": 33.0,
+      "p95-us": 50.0,
+      "B/op": 9023.0,
+      "allocs/op": 73.0
+    }
+  },
+  "speedup": {
+    "BenchmarkMetadataDisk/writers=1-4": 0.9727540161650596,
+    "BenchmarkMetadataDisk/writers=4-4": 2.957022356375961,
+    "BenchmarkMetadataDisk/writers=16-4": 9.445056866561245,
+    "BenchmarkNPMMetadataDisk-4": 2.144685030621406,
+    "BenchmarkAdmissionDuringEviction-4": 540.9782527881041
+  }
+}

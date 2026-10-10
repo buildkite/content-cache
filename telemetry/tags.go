@@ -19,10 +19,12 @@ const (
 type CacheResult string
 
 const (
-	CacheHit    CacheResult = "hit"
-	CacheMiss   CacheResult = "miss"
-	CacheBypass CacheResult = "bypass"
-	CacheNA     CacheResult = "na"
+	// CacheCoalesced identifies requests waiting on an existing metadata fetch.
+	CacheCoalesced CacheResult = "coalesced"
+	CacheHit       CacheResult = "hit"
+	CacheMiss      CacheResult = "miss"
+	CacheBypass    CacheResult = "bypass"
+	CacheNA        CacheResult = "na"
 )
 
 // AuthOutcome represents the result of an authentication check.

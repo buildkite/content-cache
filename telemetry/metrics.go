@@ -54,6 +54,11 @@ type Metrics struct {
 	backendRequestsTotal    metric.Int64Counter
 	backendBytesTotal       metric.Int64Counter
 
+	metaDBBatchDuration        metric.Float64Histogram
+	metaDBLastWriteTransaction metric.Int64Gauge
+	metaDBWriteCalls           metric.Int64Gauge
+	metaDBWriteTime            metric.Float64Gauge
+
 	// Auth metrics
 	authRequestsTotal metric.Int64Counter
 
@@ -62,24 +67,27 @@ type Metrics struct {
 	reaperDuration     metric.Float64Histogram
 
 	// S3-FIFO eviction metrics
-	s3fifoAdmissionsTotal          metric.Int64Counter
-	s3fifoAdmissionBytesTotal      metric.Int64Counter
-	s3fifoGhostHitsTotal           metric.Int64Counter
-	s3fifoPromotionsTotal          metric.Int64Counter
-	s3fifoOneHitEvictionsTotal     metric.Int64Counter
-	s3fifoOneHitEvictionBytesTotal metric.Int64Counter
-	s3fifoSecondChanceTotal        metric.Int64Counter
-	s3fifoEvictionsTotal           metric.Int64Counter
-	s3fifoEvictionBytesTotal       metric.Int64Counter
-	s3fifoPinnedSkipsTotal         metric.Int64Counter
-	s3fifoEvictionRunDuration      metric.Float64Histogram
-	s3fifoEvictionRunsTotal        metric.Int64Counter
-	s3fifoQueueBytes               metric.Int64Gauge
-	s3fifoQueueEntries             metric.Int64Gauge
-	s3fifoGhostEntries             metric.Int64Gauge
-	s3fifoTargetBytes              metric.Int64Gauge
-	s3fifoCacheMaxSizeBytes        metric.Int64Gauge
-	s3fifoOverlimitBytes           metric.Int64Gauge
+	s3fifoAdmissionsTotal           metric.Int64Counter
+	s3fifoAdmissionBytesTotal       metric.Int64Counter
+	s3fifoGhostHitsTotal            metric.Int64Counter
+	s3fifoPromotionsTotal           metric.Int64Counter
+	s3fifoOneHitEvictionsTotal      metric.Int64Counter
+	s3fifoOneHitEvictionBytesTotal  metric.Int64Counter
+	s3fifoSecondChanceTotal         metric.Int64Counter
+	s3fifoEvictionsTotal            metric.Int64Counter
+	s3fifoEvictionBytesTotal        metric.Int64Counter
+	s3fifoEvictionErrorsTotal       metric.Int64Counter
+	s3fifoEvictionBlockedTotal      metric.Int64Counter
+	s3fifoOrphanedQueueEntriesTotal metric.Int64Counter
+	s3fifoPinnedSkipsTotal          metric.Int64Counter
+	s3fifoEvictionRunDuration       metric.Float64Histogram
+	s3fifoEvictionRunsTotal         metric.Int64Counter
+	s3fifoQueueBytes                metric.Int64Gauge
+	s3fifoQueueEntries              metric.Int64Gauge
+	s3fifoGhostEntries              metric.Int64Gauge
+	s3fifoTargetBytes               metric.Int64Gauge
+	s3fifoCacheMaxSizeBytes         metric.Int64Gauge
+	s3fifoOverlimitBytes            metric.Int64Gauge
 
 	meterProvider *sdkmetric.MeterProvider
 	promHandler   http.Handler
@@ -228,6 +236,43 @@ func doInitMetrics(ctx context.Context, cfg MetricsConfig) error {
 		"content_cache_upstream_fetch_bytes_total",
 		metric.WithDescription("Total bytes fetched from upstream"),
 		metric.WithUnit("By"),
+	)
+	if err != nil {
+		return err
+	}
+
+	metaDBBatchDuration, err := meter.Float64Histogram(
+		"content_cache_metadb_batch_duration_seconds",
+		metric.WithDescription("bbolt batch duration by operation and phase"),
+		metric.WithUnit("s"),
+		metric.WithExplicitBucketBoundaries(0.0001, 0.0005, 0.001, 0.0025, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1),
+	)
+	if err != nil {
+		return err
+	}
+
+	metaDBLastWriteTransaction, err := meter.Int64Gauge(
+		"content_cache_metadb_last_write_transaction_id",
+		metric.WithDescription("Last observed committed bbolt write transaction ID"),
+		metric.WithUnit("{transaction}"),
+	)
+	if err != nil {
+		return err
+	}
+
+	metaDBWriteCalls, err := meter.Int64Gauge(
+		"content_cache_metadb_write_calls",
+		metric.WithDescription("Cumulative bbolt file write calls"),
+		metric.WithUnit("{write}"),
+	)
+	if err != nil {
+		return err
+	}
+
+	metaDBWriteTime, err := meter.Float64Gauge(
+		"content_cache_metadb_write_time_seconds",
+		metric.WithDescription("Cumulative time bbolt spent writing to disk"),
+		metric.WithUnit("s"),
 	)
 	if err != nil {
 		return err
@@ -388,6 +433,33 @@ func doInitMetrics(ctx context.Context, cfg MetricsConfig) error {
 		return err
 	}
 
+	s3fifoEvictionErrorsTotal, err := meter.Int64Counter(
+		"content_cache_s3fifo_eviction_errors_total",
+		metric.WithDescription("Total S3-FIFO eviction errors by reason and queue"),
+		metric.WithUnit("{error}"),
+	)
+	if err != nil {
+		return err
+	}
+
+	s3fifoEvictionBlockedTotal, err := meter.Int64Counter(
+		"content_cache_s3fifo_eviction_blocked_total",
+		metric.WithDescription("Total S3-FIFO eviction runs that could not make progress"),
+		metric.WithUnit("{run}"),
+	)
+	if err != nil {
+		return err
+	}
+
+	s3fifoOrphanedQueueEntriesTotal, err := meter.Int64Counter(
+		"content_cache_s3fifo_orphaned_queue_entries_total",
+		metric.WithDescription("Total stale S3-FIFO queue entries without matching blob metadata"),
+		metric.WithUnit("{entry}"),
+	)
+	if err != nil {
+		return err
+	}
+
 	s3fifoEvictionRunDuration, err := meter.Float64Histogram(
 		"content_cache_s3fifo_eviction_run_duration_seconds",
 		metric.WithDescription("Duration of S3-FIFO eviction runs"),
@@ -462,6 +534,14 @@ func doInitMetrics(ctx context.Context, cfg MetricsConfig) error {
 	}
 
 	globalMetrics = &Metrics{
+		metaDBBatchDuration:             metaDBBatchDuration,
+		metaDBLastWriteTransaction:      metaDBLastWriteTransaction,
+		metaDBWriteCalls:                metaDBWriteCalls,
+		metaDBWriteTime:                 metaDBWriteTime,
+		s3fifoEvictionErrorsTotal:       s3fifoEvictionErrorsTotal,
+		s3fifoEvictionBlockedTotal:      s3fifoEvictionBlockedTotal,
+		s3fifoOrphanedQueueEntriesTotal: s3fifoOrphanedQueueEntriesTotal,
+
 		authRequestsTotal:              authRequestsTotal,
 		reaperDeletedTotal:             reaperDeletedTotal,
 		reaperDuration:                 reaperDuration,
@@ -916,4 +996,62 @@ func (noopExporter) ForceFlush(_ context.Context) error {
 
 func (noopExporter) Shutdown(_ context.Context) error {
 	return nil
+}
+
+// RecordMetaDBBatch records total caller latency and time spent executing the
+// callback inside a bbolt batch transaction.
+func RecordMetaDBBatch(ctx context.Context, operation, outcome string, total, callback time.Duration) {
+	if globalMetrics == nil {
+		return
+	}
+	attrs := []attribute.KeyValue{
+		attribute.String("operation", operation),
+		attribute.String("outcome", outcome),
+	}
+	globalMetrics.metaDBBatchDuration.Record(ctx, total.Seconds(), metric.WithAttributes(
+		append(attrs, attribute.String("phase", "total"))...,
+	))
+	globalMetrics.metaDBBatchDuration.Record(ctx, callback.Seconds(), metric.WithAttributes(
+		append(attrs, attribute.String("phase", "callback"))...,
+	))
+}
+
+// UpdateMetaDBStats publishes cumulative bbolt write statistics.
+func UpdateMetaDBStats(ctx context.Context, txID, writes int64, writeTime time.Duration) {
+	if globalMetrics == nil {
+		return
+	}
+	globalMetrics.metaDBLastWriteTransaction.Record(ctx, txID)
+	globalMetrics.metaDBWriteCalls.Record(ctx, writes)
+	globalMetrics.metaDBWriteTime.Record(ctx, writeTime.Seconds())
+}
+
+// RecordS3FIFOEvictionError records an operational error during S3-FIFO eviction.
+func RecordS3FIFOEvictionError(ctx context.Context, queue, reason string) {
+	if globalMetrics == nil {
+		return
+	}
+	attrs := []attribute.KeyValue{
+		attribute.String("queue", queue),
+		attribute.String("reason", reason),
+	}
+	globalMetrics.s3fifoEvictionErrorsTotal.Add(ctx, 1, metric.WithAttributes(attrs...))
+}
+
+// RecordS3FIFOEvictionBlocked records an eviction run that could not make progress.
+func RecordS3FIFOEvictionBlocked(ctx context.Context, reason string) {
+	if globalMetrics == nil {
+		return
+	}
+	attrs := []attribute.KeyValue{attribute.String("reason", reason)}
+	globalMetrics.s3fifoEvictionBlockedTotal.Add(ctx, 1, metric.WithAttributes(attrs...))
+}
+
+// RecordS3FIFOOrphanedQueueEntry records a stale queue entry with no blob metadata.
+func RecordS3FIFOOrphanedQueueEntry(ctx context.Context, queue string) {
+	if globalMetrics == nil {
+		return
+	}
+	attrs := []attribute.KeyValue{attribute.String("queue", queue)}
+	globalMetrics.s3fifoOrphanedQueueEntriesTotal.Add(ctx, 1, metric.WithAttributes(attrs...))
 }

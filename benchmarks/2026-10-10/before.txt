@@ -1,0 +1,30 @@
+goos: linux
+goarch: amd64
+pkg: github.com/buildkite/content-cache/store/metadb
+cpu: Intel(R) Xeon(R) Gold 6240 CPU @ 2.60GHz
+BenchmarkMetadataDisk/writers=1-4         	     962	   1278051 ns/op	         1.000 commits/op	      1581 p50-us	      1667 p95-us	   43735 B/op	     155 allocs/op
+BenchmarkMetadataDisk/writers=1-4         	    1000	   1254386 ns/op	         1.000 commits/op	      1554 p50-us	      1640 p95-us	   43750 B/op	     155 allocs/op
+BenchmarkMetadataDisk/writers=1-4         	     910	   1288616 ns/op	         1.000 commits/op	      1570 p50-us	      1682 p95-us	   43783 B/op	     155 allocs/op
+BenchmarkMetadataDisk/writers=1-4         	     913	   1395121 ns/op	         1.000 commits/op	      1570 p50-us	      1650 p95-us	   43808 B/op	     155 allocs/op
+BenchmarkMetadataDisk/writers=1-4         	     966	   1307494 ns/op	         1.000 commits/op	      1576 p50-us	      1704 p95-us	   43787 B/op	     155 allocs/op
+BenchmarkMetadataDisk/writers=4-4         	     942	   1325303 ns/op	         1.000 commits/op	      5372 p50-us	      6517 p95-us	   43776 B/op	     155 allocs/op
+BenchmarkMetadataDisk/writers=4-4         	     882	   1315665 ns/op	         1.000 commits/op	      5319 p50-us	      6433 p95-us	   43830 B/op	     155 allocs/op
+BenchmarkMetadataDisk/writers=4-4         	     919	   1151234 ns/op	         1.000 commits/op	      4287 p50-us	      5514 p95-us	   43838 B/op	     155 allocs/op
+BenchmarkMetadataDisk/writers=4-4         	    1056	   1407550 ns/op	         1.000 commits/op	      5415 p50-us	      6540 p95-us	   43837 B/op	     155 allocs/op
+BenchmarkMetadataDisk/writers=4-4         	    1089	   1183772 ns/op	         1.000 commits/op	      4281 p50-us	      5394 p95-us	   43792 B/op	     155 allocs/op
+BenchmarkMetadataDisk/writers=16-4        	     840	   1309229 ns/op	         1.000 commits/op	     20987 p50-us	     23305 p95-us	   43786 B/op	     155 allocs/op
+BenchmarkMetadataDisk/writers=16-4        	     994	   1200630 ns/op	         1.000 commits/op	     19190 p50-us	     21182 p95-us	   43850 B/op	     155 allocs/op
+BenchmarkMetadataDisk/writers=16-4        	    1048	   1242365 ns/op	         1.000 commits/op	     19918 p50-us	     21668 p95-us	   43891 B/op	     155 allocs/op
+BenchmarkMetadataDisk/writers=16-4        	     943	   1215619 ns/op	         1.000 commits/op	     19366 p50-us	     21245 p95-us	   43776 B/op	     155 allocs/op
+BenchmarkMetadataDisk/writers=16-4        	    1116	   1313791 ns/op	         1.000 commits/op	     20805 p50-us	     24305 p95-us	   43811 B/op	     155 allocs/op
+PASS
+goos: linux
+goarch: amd64
+pkg: github.com/buildkite/content-cache/protocol/npm
+cpu: Intel(R) Xeon(R) Gold 6240 CPU @ 2.60GHz
+BenchmarkNPMMetadataDisk-4   	    1171	    981073 ns/op	  33.44 MB/s	   65050 B/op	     162 allocs/op
+BenchmarkNPMMetadataDisk-4   	    1102	    912988 ns/op	  35.93 MB/s	   56516 B/op	     162 allocs/op
+BenchmarkNPMMetadataDisk-4   	    1258	    965134 ns/op	  33.99 MB/s	   77485 B/op	     162 allocs/op
+BenchmarkNPMMetadataDisk-4   	    1128	    941695 ns/op	  34.84 MB/s	   49673 B/op	     162 allocs/op
+BenchmarkNPMMetadataDisk-4   	    1149	   1046984 ns/op	  31.34 MB/s	   65705 B/op	     162 allocs/op
+PASS

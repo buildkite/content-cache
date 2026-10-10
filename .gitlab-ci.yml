@@ -1,0 +1,60 @@
+workflow:
+  rules:
+    - if: '$CI_COMMIT_TAG =~ /^v[0-9]+\.[0-9]+\.[0-9]+-campbox\.[0-9]+$/'
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+    - if: '$CI_COMMIT_BRANCH && $CI_OPEN_MERGE_REQUESTS'
+      when: never
+    - if: '$CI_COMMIT_BRANCH'
+
+default:
+  image: golang:1.26.8-bookworm
+  tags: [docker-executor]
+  interruptible: true
+  cache:
+    key:
+      prefix: go1.26.8
+      files: [go.sum]
+    paths: [.cache/go-build/, .cache/go-mod/]
+
+variables:
+  GOTOOLCHAIN: local
+  GOFLAGS: -mod=readonly
+  GOPATH: $CI_PROJECT_DIR/.cache/go
+  GOMODCACHE: $CI_PROJECT_DIR/.cache/go-mod
+  GOCACHE: $CI_PROJECT_DIR/.cache/go-build
+  GOMAXPROCS: "2"
+
+stages: [test, build, release]
+
+test:
+  stage: test
+  script:
+    - sh scripts/check.sh
+
+test-installer:
+  stage: test
+  image: python:3.14-slim-bookworm@sha256:48b13b003dda20b16f9442b8475aa05fe21bf6579a8c881db92ffb4d8fd20f83
+  cache: []
+  script:
+    - python3 -m unittest discover -s scripts/tests -v
+
+build:
+  stage: build
+  needs: [test, test-installer]
+  script:
+    - sh scripts/build.sh
+  artifacts:
+    paths: [dist/]
+    expire_in: 14 days
+
+release:
+  stage: release
+  needs:
+    - job: build
+      artifacts: true
+  interruptible: false
+  resource_group: content-cache-release
+  rules:
+    - if: '$CI_COMMIT_TAG =~ /^v[0-9]+\.[0-9]+\.[0-9]+-campbox\.[0-9]+$/'
+  script:
+    - go run ./scripts/release

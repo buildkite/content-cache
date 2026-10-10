@@ -27,12 +27,19 @@ func newTestQueues(t *testing.T) *BoltQueues {
 	return q
 }
 
+func pushHead(t *testing.T, q Queues, queue, hash string) bool {
+	t.Helper()
+	replaced, err := q.PushHead(queue, hash)
+	require.NoError(t, err)
+	return replaced
+}
+
 func TestPushHeadPopTailFIFO(t *testing.T) {
 	q := newTestQueues(t)
 
-	require.NoError(t, q.PushHead(QueueSmall, "a"))
-	require.NoError(t, q.PushHead(QueueSmall, "b"))
-	require.NoError(t, q.PushHead(QueueSmall, "c"))
+	require.False(t, pushHead(t, q, QueueSmall, "a"))
+	require.False(t, pushHead(t, q, QueueSmall, "b"))
+	require.False(t, pushHead(t, q, QueueSmall, "c"))
 
 	// Tail is oldest (first inserted).
 	got, err := q.PopTail(QueueSmall)
@@ -52,6 +59,29 @@ func TestPushHeadPopTailFIFO(t *testing.T) {
 	require.ErrorIs(t, err, ErrQueueEmpty)
 }
 
+func TestPushHeadExistingHashIsIdempotent(t *testing.T) {
+	q := newTestQueues(t)
+
+	require.False(t, pushHead(t, q, QueueSmall, "a"))
+	require.False(t, pushHead(t, q, QueueSmall, "b"))
+	require.True(t, pushHead(t, q, QueueSmall, "a"))
+
+	n, err := q.Len(QueueSmall)
+	require.NoError(t, err)
+	require.Equal(t, 2, n, "queue should contain one entry per hash")
+
+	got, err := q.PopTail(QueueSmall)
+	require.NoError(t, err)
+	require.Equal(t, "b", got, "existing hash should move to the head without leaving stale FIFO entries")
+
+	got, err = q.PopTail(QueueSmall)
+	require.NoError(t, err)
+	require.Equal(t, "a", got)
+
+	_, err = q.PopTail(QueueSmall)
+	require.ErrorIs(t, err, ErrQueueEmpty)
+}
+
 func TestPopTailEmptyQueue(t *testing.T) {
 	q := newTestQueues(t)
 	_, err := q.PopTail(QueueMain)
@@ -61,9 +91,9 @@ func TestPopTailEmptyQueue(t *testing.T) {
 func TestRemove(t *testing.T) {
 	q := newTestQueues(t)
 
-	require.NoError(t, q.PushHead(QueueSmall, "x"))
-	require.NoError(t, q.PushHead(QueueSmall, "y"))
-	require.NoError(t, q.PushHead(QueueSmall, "z"))
+	pushHead(t, q, QueueSmall, "x")
+	pushHead(t, q, QueueSmall, "y")
+	pushHead(t, q, QueueSmall, "z")
 
 	removed, err := q.Remove(QueueSmall, "y")
 	require.NoError(t, err)
@@ -93,8 +123,8 @@ func TestLen(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, 0, n)
 
-	require.NoError(t, q.PushHead(QueueSmall, "a"))
-	require.NoError(t, q.PushHead(QueueSmall, "b"))
+	pushHead(t, q, QueueSmall, "a")
+	pushHead(t, q, QueueSmall, "b")
 
 	n, err = q.Len(QueueSmall)
 	require.NoError(t, err)
@@ -120,6 +150,28 @@ func TestGhostContainsAddRemove(t *testing.T) {
 	found, err = q.GhostContains("h1")
 	require.NoError(t, err)
 	require.False(t, found)
+}
+
+func TestGhostAddExistingHashIsIdempotent(t *testing.T) {
+	q := newTestQueues(t)
+
+	require.NoError(t, q.GhostAdd("h1"))
+	require.NoError(t, q.GhostAdd("h2"))
+	require.NoError(t, q.GhostAdd("h1"))
+
+	n, err := q.GhostLen()
+	require.NoError(t, err)
+	require.Equal(t, 2, n, "ghost queue should contain one entry per hash")
+
+	require.NoError(t, q.GhostTrimToMaxSize(1))
+
+	found, err := q.GhostContains("h1")
+	require.NoError(t, err)
+	require.True(t, found, "re-added hash should be treated as newest")
+
+	found, err = q.GhostContains("h2")
+	require.NoError(t, err)
+	require.False(t, found, "oldest ghost entry should be trimmed")
 }
 
 func TestGhostTrimToMaxSize(t *testing.T) {
@@ -158,7 +210,9 @@ func TestAdmitGhostHit(t *testing.T) {
 	require.NoError(t, q.GhostAdd("gh1"))
 
 	// On re-admission (ghost hit): remove from ghost, add to main.
-	require.NoError(t, q.AdmitGhostHit("gh1"))
+	admitted, err := q.AdmitGhostHit("gh1")
+	require.NoError(t, err)
+	require.True(t, admitted)
 
 	found, err := q.GhostContains("gh1")
 	require.NoError(t, err)
@@ -167,13 +221,17 @@ func TestAdmitGhostHit(t *testing.T) {
 	n, err := q.Len(QueueMain)
 	require.NoError(t, err)
 	require.Equal(t, 1, n)
+
+	admitted, err = q.AdmitGhostHit("gh1")
+	require.NoError(t, err)
+	require.False(t, admitted, "a consumed ghost entry must not be admitted twice")
 }
 
 func TestForEach(t *testing.T) {
 	q := newTestQueues(t)
 
 	for _, h := range []string{"x", "y", "z"} {
-		require.NoError(t, q.PushHead(QueueSmall, h))
+		pushHead(t, q, QueueSmall, h)
 	}
 
 	var got []string

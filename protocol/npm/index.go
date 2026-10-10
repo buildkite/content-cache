@@ -37,10 +37,9 @@ func NewIndex(metadataIndex, cacheIndex *metadb.EnvelopeIndex) *Index {
 }
 
 // GetPackageMetadata retrieves cached metadata for a package.
+// EnvelopeIndex and bbolt synchronize metadata operations independently of
+// the cached tarball read-modify-write state protected by mu.
 func (idx *Index) GetPackageMetadata(ctx context.Context, name string) ([]byte, error) {
-	idx.mu.RLock()
-	defer idx.mu.RUnlock()
-
 	key := encodePackageName(name)
 	data, err := idx.metadataIndex.Get(ctx, key)
 	if err != nil {
@@ -54,9 +53,6 @@ func (idx *Index) GetPackageMetadata(ctx context.Context, name string) ([]byte, 
 
 // PutPackageMetadata stores package metadata.
 func (idx *Index) PutPackageMetadata(ctx context.Context, name string, metadata []byte) error {
-	idx.mu.Lock()
-	defer idx.mu.Unlock()
-
 	key := encodePackageName(name)
 	return idx.metadataIndex.Put(ctx, key, metadata, metadb.ContentType_CONTENT_TYPE_JSON, nil)
 }

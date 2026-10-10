@@ -1,830 +1,203 @@
-# content-cache
+# content-cache для Campbox
 
-A content-addressable caching proxy for Go modules, NPM packages, PyPI packages, Maven artifacts, RubyGems, OCI registries, Git repositories, direct download artefacts, and a generic HTTP build cache compatible with sccache and Gradle's HTTP Build Cache. Reduces build times and network bandwidth by caching package downloads and build artifacts locally with automatic deduplication and expiration policies.
+npm registry возвращает для некоторых пакетов полный JSON метаданных больше
+10 МиБ. Upstream v1.4.0 не сохраняет такие ответы (`payload exceeds maximum
+size`), поэтому каждое обращение снова загружает их из интернета. Эта сборка
+сохраняет метаданные до 64 МиБ и позволяет менять предел без пересборки.
 
-## Problem
+Основа: [Buildkite content-cache v1.4.0](https://github.com/buildkite/content-cache/tree/v1.4.0),
+commit `7c42c286ac0cbb450a6ee0e513894acce15fe1dc`. История upstream сохранена;
+remote `upstream` указывает на официальный репозиторий. Модуль Go сохраняет
+исходный путь, чтобы правки было проще переносить. Лицензия — Apache-2.0,
+см. [LICENSE](LICENSE). Общая документация прокси: [README.upstream.md](README.upstream.md).
 
-Development teams waste significant time and bandwidth re-downloading the same packages across builds, CI runs, and developer machines. A single `go mod download` or `npm install` can fetch hundreds of megabytes that were already downloaded yesterday. Network failures during package downloads break builds unpredictably.
+## Одновременные запросы npm-метаданных
 
-## Solution
+При промахе кэша одновременные запросы одного пакета используют одну загрузку
+из registry и одну запись в кэш. Запросы разных пакетов выполняются параллельно.
+Общий результат содержит полные метаданные с исходными upstream URL; формат
+ответа и ссылки tarball формируются отдельно для каждого клиента. Поэтому
+полный/сокращённый ответы и разные адреса доступа используют одну загрузку.
 
-content-cache acts as a local caching proxy that:
-- Stores packages once using content-addressable storage (BLAKE3 hashing)
-- Serves cached packages in microseconds instead of milliseconds
-- Deduplicates identical content across different package versions
-- Coalesces concurrent requests for the same uncached resource into a single upstream fetch
-- Continues serving cached packages when upstream registries are unavailable
+Отмена одного клиента не отменяет загрузку для остальных. Оставшаяся загрузка
+может заполнить кэш даже после ухода всех клиентов; она ограничена timeout и
+отменяется при остановке сервера. Ошибки registry передаются текущим ожидающим
+клиентам, следующий запрос может повторить загрузку. Ошибка записи в кэш не
+мешает отдать успешно полученные метаданные.
 
-## S3-FIFO Cache Eviction
+Запись выполняется до завершения общей загрузки, чтобы исключить повторный
+промах между получением ответа и сохранением. В логах и HTTP-метриках
+`cache_result=coalesced` обозначает запросы, присоединившиеся к текущей загрузке.
+Объединение работает внутри одного процесса content-cache; несколько его
+экземпляров не разделяют выполняющиеся запросы.
 
-Based on [FIFO Queues are All You Need for Cache Eviction (CMU-CS-24-149)](https://www.pdl.cmu.edu/ftp/Storage/CMU-CS-24-149-juncheny.pdf).
+## Запись метаданных и очистка
 
-S3-FIFO achieves lower miss ratios than LRU by keeping one-hit-wonders out of the main cache. It uses three structures:
+Параллельные записи bbolt объединяются в одну durable-транзакцию с одним
+fsync. Первый/одиночный писатель выполняет Update сразу; пересекающиеся записи
+используют Batch. Метаданные разных npm-пакетов больше не удерживают общую
+блокировку индекса. Read-modify-write состояния tarball сохраняет блокировку.
 
-- **Small queue (10% of `--cache-max-size`)** — new blobs enter here. A blob that is accessed again while in this queue is promoted to main; one that is never re-accessed is evicted and recorded in the ghost set.
-- **Main queue (90%)** — hot blobs. Each eviction candidate gets a second-chance pass for every cache hit it received since its last eviction check, then is evicted cold.
-- **Ghost set** — a compact in-memory + on-disk set of recently evicted hashes (no blob data). When a client re-requests an evicted blob it is admitted directly to main, bypassing the small queue probation period.
+Настройки задаются без пересборки:
 
-### Memory and disk overhead
-
-The ghost set stores only hashes (32 bytes each), not blob data. Its size is automatically capped at the current number of entries in the main queue. For a cache holding 100,000 blobs this amounts to roughly 3 MB of ghost state persisted in bbolt alongside the queue metadata.
-
-### Configuration
-
-Size eviction activates automatically when `--cache-max-size` is set. The GC continues to run in parallel and handles TTL expiry, unreferenced blobs, and orphan cleanup — S3-FIFO handles only the size limit.
-
-| Flag | Default | Description |
-|------|---------|-------------|
-| `--cache-max-size` | `10737418240` (10 GB) | Total byte limit for cached blobs. Set to `0` to disable size eviction. |
-| `--gc-interval` | `1h` | How often the background eviction safety-net tick fires. Real eviction is signal-driven and happens inline after each cache write. |
-
-### Startup behaviour
-
-Queue state is persisted in bbolt, so eviction is warm across restarts — the manager recomputes byte totals from the persisted queue on startup and resumes where it left off. Blobs that were written before S3-FIFO was first enabled (e.g. files left on disk from a previous deployment) will not appear in any queue and will not be subject to size eviction until they are naturally expired by TTL or cleaned up by GC.
-
-## Quick Start
-
-```bash
-# Build and run the cache server
-go build -o content-cache ./cmd/content-cache
-./content-cache serve --listen :8080 --storage ./cache
-
-# Configure Go to use the cache
-export GOPROXY=http://localhost:8080/goproxy,direct
-
-# Downloads are now cached locally
-go get github.com/pkg/errors@v0.9.1  # First request: ~12ms (upstream)
-go get github.com/pkg/errors@v0.9.1  # Second request: ~100µs (cache hit)
-
-# Configure NPM to use the cache
-npm config set registry http://localhost:8080/npm/
-
-# NPM packages are now cached
-npm install express  # First request: fetches from upstream
-npm install express  # Second request: served from cache
-
-# Use as an OCI registry mirror (prefix-based routing, default prefix: docker-hub)
-docker pull localhost:8080/docker-hub/library/alpine:latest
-
-# Configure pip to use the cache
-pip install --index-url http://localhost:8080/pypi/simple/ requests
-
-# Python packages are now cached
-pip install requests  # First request: fetches from upstream
-pip install requests  # Second request: served from cache
-
-# Configure Maven to use the cache
-# Create ~/.m2/settings.xml with:
-#
-# <?xml version="1.0" encoding="UTF-8"?>
-# <settings xmlns="http://maven.apache.org/SETTINGS/1.2.0"
-#           xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
-#           xsi:schemaLocation="http://maven.apache.org/SETTINGS/1.2.0 https://maven.apache.org/xsd/settings-1.2.0.xsd">
-#   <mirrors>
-#     <mirror>
-#       <id>content-cache</id>
-#       <mirrorOf>central</mirrorOf>
-#       <url>http://localhost:8080/maven</url>
-#     </mirror>
-#   </mirrors>
-# </settings>
-
-# Maven artifacts are now cached
-mvn dependency:get -Dartifact=org.apache.commons:commons-lang3:3.12.0
-
-# Configure Gradle to use the cache (in settings.gradle.kts or build.gradle.kts)
-# repositories {
-#     maven {
-#         url = uri("http://localhost:8080/maven")
-#     }
-# }
-
-# Gradle uses the same Maven repository protocol - no separate handler needed
-./gradlew build  # Dependencies are cached through the Maven endpoint
-
-# Add Clojars (or any extra Maven-compatible repo) as a fallback upstream.
-# Fetches try each URL in order and fall through on 404, with short-lived
-# negative caching so misses don't repeat on every request.
-content-cache --maven-upstream=https://repo.maven.apache.org/maven2 \
-              --maven-upstream=https://repo.clojars.org
-
-# Configure Bundler to use the cache (global mirror)
-bundle config set --global mirror.https://rubygems.org http://localhost:8080/rubygems/
-
-# Or configure gem command directly
-gem sources --add http://localhost:8080/rubygems/
-gem sources --remove https://rubygems.org/
-
-# Ruby gems are now cached
-bundle install   # First request: fetches from upstream
-bundle install   # Second request: served from cache
-
-# Use as a Git HTTPS caching proxy (requires --git-allowed-hosts)
-./content-cache serve --listen :8080 --storage ./cache --git-allowed-hosts github.com
-
-# Clone through the proxy
-git clone http://localhost:8080/git/github.com/user/repo.git /tmp/repo
-
-# Repeated clones with the same refs are served from cache
-git clone http://localhost:8080/git/github.com/user/repo.git /tmp/repo2  # cache hit
-
-# Or configure Git to transparently route through the proxy
-git config --global url."http://localhost:8080/git/github.com/".insteadOf "https://github.com/"
-
-# Now regular git commands work transparently through the cache
-git clone https://github.com/user/repo.git  # routed through proxy automatically
-
-# To undo
-git config --global --unset url."http://localhost:8080/git/github.com/".insteadOf
-
-# Cache mise aqua downloads from GitHub Releases plus other direct HTTPS assets
-./content-cache serve --listen :8080 --storage ./cache \
-  --fetch-allowed-hosts raw.githubusercontent.com,releases.hashicorp.com,nodejs.org,dl.google.com
-
-# mise can rewrite release downloads to the cache server
-cat >> ~/.config/mise/config.toml <<'EOF'
-[settings.url_replacements]
-"regex:^https://github\\.com/(.+/releases/download/.+)" = "http://localhost:8080/github-release/$1"
-"regex:^https://raw\\.githubusercontent\\.com/(.+)" = "http://localhost:8080/fetch/raw.githubusercontent.com/$1"
-"regex:^https://releases\\.hashicorp\\.com/(.+)" = "http://localhost:8080/fetch/releases.hashicorp.com/$1"
-EOF
-
-# Use as a shared Go build cache (GOCACHEPROG)
-# The cacheprog subcommand implements the GOCACHEPROG protocol, backed by the server's /buildcache/ endpoint.
-# Artifacts are stored on the server and a local copy is kept for DiskPath responses.
-export GOCACHEPROG="content-cache cacheprog --server http://localhost:8080"
-go build ./...  # First build: artifacts uploaded to server
-go build ./...  # Subsequent builds on any machine: artifacts served from server cache
-
-# Use as an sccache HTTP storage backend
-# sccache and Gradle's HTTP Build Cache share the same simple GET/PUT protocol.
-# Point sccache at the /httpcache/ endpoint:
-export SCCACHE_HTTP_URL=http://localhost:8080/httpcache/
-sccache --start-server
-cargo build  # First build: artifacts uploaded to server
-cargo build  # Subsequent builds: artifacts served from cache
-
-# Use as a Gradle HTTP Build Cache
-# In settings.gradle.kts:
-# buildCache {
-#     remote<HttpBuildCache> {
-#         url = uri("http://localhost:8080/httpcache/")
-#         isPush = true
-#     }
-# }
-./gradlew build  # Build outputs are stored in and served from the HTTP cache
+```sh
+content-cache serve --storage=/var/lib/content-cache \
+  --metadata-batch-size=100 --metadata-batch-delay=1ms
 ```
 
-## Performance
+Альтернативы: `METADATA_BATCH_SIZE=100`, `METADATA_BATCH_DELAY=1ms`.
+Размер и задержка должны быть положительными; размер `1` отключает batching.
+Задержка ограничивает сбор группы, а не время ожидания занятой БД или fsync.
+Пользовательские callbacks UpdateJSON/UpdateEnvelope остаются в Update:
+Batch может повторять callback после отката неудачной группы.
 
-| Operation | Upstream | Cached | Improvement |
-|-----------|----------|--------|-------------|
-| Module info | 12ms | 100µs | 120x faster |
-| Module zip | 150ms | 1ms | 150x faster |
+S3-FIFO освобождает блокировки перед удалением файлов и между закреплёнными
+кандидатами. При ошибке удаления кандидат возвращается в очередь. Сканирование
+ограничено исходной длиной очереди; если все элементы закреплены, очистка ждёт
+следующего события или таймера вместо немедленного повторения. Повторное
+добавление hash не увеличивает счётчики размера и длины.
 
-## Current Features
+Добавлены метрики времени операций/состояния bbolt, ошибок очистки,
+отсутствия прогресса и устаревших элементов очереди. Формат БД не изменён.
+Замеры до/после, параметры и исходные результаты:
+[benchmarks/2026-10-10/README.md](benchmarks/2026-10-10/README.md).
 
-### Implemented
-- **GOPROXY Protocol**: Full support for Go module proxy protocol (`/@v/list`, `.info`, `.mod`, `.zip`)
-- **Go Checksum Database Proxy**: Caches `sum.golang.org` lookups at `/sumdb/` (also accessible at `/goproxy/sumdb/`); entries never expire since they are cryptographically immutable
-- **Go Build Cache (GOCACHEPROG)**: `cacheprog` subcommand implements the `GOCACHEPROG` protocol, backed by the `/buildcache/` HTTP endpoint — enables shared, persistent build artifact caching across CI runners and developer machines
-- **HTTP Build Cache (sccache / Gradle)**: Generic HTTP build cache at `/{httpcache-prefix}/` (default `/httpcache/`) — compatible with sccache's HTTP storage backend and Gradle's `HttpBuildCache`. Both tools use the same simple `GET`/`PUT` protocol: `GET` returns the cached blob or 404, `PUT` stores a blob keyed by an arbitrary string. No upstream fetch; this is a write-through cache only.
-- **NPM Registry Protocol**: Complete NPM registry support with tarball caching and integrity verification
-- **PyPI Simple API**: Full support for PEP 503/691 Simple Repository API with wheel and sdist caching
-- **Maven Repository**: Full support for Maven Central with JAR, POM, and checksum caching
-- **RubyGems Registry**: Full support for Compact Index and legacy specs API with gem caching and SHA256 verification
-- **OCI Distribution v2**: Read-through cache for container registries with tag-to-digest resolution
-- **Git Smart HTTP Proxy**: Caching proxy for `git clone`/`fetch` over HTTPS with pack-level caching, host allowlist, and singleflight deduplication
-- **Direct HTTPS Fetch Cache**: Read-through cache for immutable release artefacts and mirrored downloads via `/github-release/*` and `/fetch/{host}/...`
-- **Content-Addressable Storage**: BLAKE3 hashing with automatic deduplication
-- **Filesystem Backend**: Atomic writes with sharded directory structure
-- **Download Deduplication**: Singleflight-based coalescing of concurrent requests for the same uncached resource
-- **Pull-Through Caching**: Fetches from upstream on cache miss, caches for future requests
-- **Cache Expiration**: TTL-based expiration with S3-FIFO size-based eviction (lower miss ratios by filtering one-hit-wonders from polluting the main cache)
-- **Inbound Authentication**: Static token auth (`--auth-token` / `--auth-token-file`) or OIDC token validation (`--oidc-policies`) with per-protocol permission policies for CI/CD pipelines (GitHub Actions, Buildkite, GitLab CI). Accepts both `Authorization: Bearer <token>` and `Authorization: Basic` (password = token), enabling tools like pip, Maven, and Bundler that cannot send Bearer headers. All endpoints except `/health` and `/metrics` are protected.
-- **Upstream Credentials**: Template-based credentials file (`--credentials-file`) with routing tables for per-scope (NPM) and per-repo-prefix (Git) credential selection, plus multi-registry OCI auth. Supports pluggable secret providers (environment variables, files, 1Password CLI)
-- **Routing Tables**: NPM scope-based and Git repo-prefix-based routing with catch-all fallback, validated at startup
-- **Health & Stats Endpoints**: `/health` for liveness checks, `/stats` for cache statistics
-- **OpenTelemetry Metrics**: Request counts, bytes served, and latency histograms with cache hit/miss breakdown
-- **Prometheus Integration**: Optional `/metrics` endpoint for Prometheus scraping
-- **Structured Logging**: JSON logs with protocol, endpoint, cache_result, and timing fields
+## Лимит метаданных
 
-### Planned
-- S3 storage backend
-- Compression (zstd)
-- OpenTelemetry tracing
-
-## Architecture
-
-```mermaid
-graph TD
-    A[HTTP Server] --> B[GOPROXY Handler]
-    A --> C[NPM Handler]
-    A --> D[OCI Handler]
-    A --> G[PyPI Handler]
-    A --> H[Maven Handler]
-    A --> I[RubyGems Handler]
-    A --> J[Git Handler]
-    A --> K[BuildCache Handler]
-    A --> L[HTTPCache Handler]
-
-    B --> DL[Download Deduplication]
-    C --> DL
-    D --> DL
-    G --> DL
-    H --> DL
-    I --> DL
-    J --> DL
-    K --> E
-    L --> E
-
-    DL --> E[Content-Addressable Store]
-
-    E --> F[Storage Backend]
-
-    A -.-> A1["/goproxy/*"]
-    A -.-> A9["/sumdb/*"]
-    A -.-> A2["/npm/*"]
-    A -.-> A3["/v2/*"]
-    A -.-> A4["/pypi/*"]
-    A -.-> A5["/maven/*"]
-    A -.-> A6["/rubygems/*"]
-    A -.-> A8["/git/*"]
-    A -.-> A10["/buildcache/*"]
-    A -.-> A11["/httpcache/*"]
-    A -.-> A7["/health, /stats"]
-
-    E -.-> E1["blobs/{hash[0:2]}/{hash}"]
-    E -.-> E2["TTL + S3-FIFO Eviction"]
-
-    F -.-> F1["Filesystem (implemented)"]
-    F -.-> F2["S3 (planned)"]
-
-    style A fill:#e1f5ff
-    style DL fill:#f3e5f5
-    style E fill:#fff4e1
-    style F fill:#e8f5e9
+```sh
+content-cache serve --storage=/var/lib/content-cache \
+  --listen=172.17.0.1:4874 --metadata-max-size=67108864
 ```
 
-## Configuration
+Альтернатива — `METADATA_MAX_SIZE=67108864`. Аргумент имеет приоритет над
+переменной окружения. Единица измерения — байты; допустимый диапазон
+1–268435456 (256 МиБ), значение по умолчанию — 67108864 (64 МиБ).
+Один предел применяется к записи и чтению всех метаданных. Архивы пакетов
+хранятся отдельно; `--cache-max-size` ограничивает общий размер кэша на диске.
 
-Configuration is available via command-line flags or environment variables. Environment variables take precedence over defaults but are overridden by explicit flags.
+Формат metadata.db не изменён. При откате на upstream v1.4.0 записи больше
+10 МиБ станут нечитаемыми для старого бинарника. Установщик сохраняет бинарник
+и закрытую metadata.db перед обновлением и восстанавливает их при неудачном запуске.
 
-### Server Options
+## Разработка и сборка
 
-| Flag | Environment Variable | Default | Description |
-|------|---------------------|---------|-------------|
-| `--listen` | `LISTEN_ADDRESS` | `:8080` | HTTP server listen address |
-| `--storage` | `CACHE_STORAGE` | `./cache` | Local storage directory path |
-| `--tls-cert` | `TLS_CERT_FILE` | | Path to TLS certificate file (enables HTTPS) |
-| `--tls-key` | `TLS_KEY_FILE` | | Path to TLS private key file (enables HTTPS) |
+Go для CI закреплён: **1.26.8**, `golang:1.26.8-bookworm`. На машине разработчика
+нужны Go, Git и Python 3. Для race-тестов нужен C-компилятор.
 
-### Authentication Options
-
-| Flag | Environment Variable | Default | Description |
-|------|---------------------|---------|-------------|
-| `--auth-token` | `AUTH_TOKEN` | | Static Bearer token for inbound authentication (mutually exclusive with `--oidc-policies`) |
-| `--auth-token-file` | `AUTH_TOKEN_FILE` | | Path to file containing auth token (for k8s secret mounts) |
-| `--oidc-policies` | `OIDC_POLICIES_FILE` | | Path to OIDC trust policies JSON file (mutually exclusive with `--auth-token`) |
-| `--credentials-file` | `CREDENTIALS_FILE` | | Path to credentials template file for upstream auth |
-
-When `--auth-token` is set, all requests (except `/health` and `/metrics`) require authentication. Both `Authorization: Bearer <token>` and `Authorization: Basic base64(username:token)` are accepted — the password field is treated as the token. Basic auth support enables tools like pip, Maven, and Bundler that cannot send Bearer headers. The token can also be provided via the `auth_token` field in the credentials file; the CLI flag takes precedence.
-
-**Configuring tools with Basic auth** (use any string as the username; the token goes in the password field):
-
-```bash
-# pip — embed credentials in the index URL
-pip install --index-url http://x-token:$CACHE_TOKEN@cache.example.com/pypi/simple/ requests
-
-# pip — or set via environment variable (PEP 503)
-export PIP_INDEX_URL=http://x-token:$CACHE_TOKEN@cache.example.com/pypi/simple/
-pip install requests
+```sh
+sh scripts/check.sh
+python3 -m unittest discover -s scripts/tests -v
+sh scripts/build.sh 1.4.0-campbox.1
 ```
 
-```xml
-<!-- Maven — add a <server> block in ~/.m2/settings.xml -->
-<settings>
-  <servers>
-    <server>
-      <id>content-cache</id>
-      <username>x-token</username>
-      <password>${env.CACHE_TOKEN}</password>
-    </server>
-  </servers>
-  <mirrors>
-    <mirror>
-      <id>content-cache</id>
-      <mirrorOf>central</mirrorOf>
-      <url>http://cache.example.com/maven</url>
-    </mirror>
-  </mirrors>
-</settings>
+В `dist/` появятся статические бинарники `content-cache_linux_amd64` и
+`content-cache_linux_arm64`, `SHA256SUMS`, `LICENSE` и `BUILD-INFO.txt`.
+Последний содержит версию, commit сборки, состояние рабочей копии (clean/dirty),
+commit upstream и версию Go.
+При запуске сборки без тега используется версия `0.0.0-dev`.
+
+## Подключение к GitLab
+
+Создать пустой проект `tlcamp/content-cache` в `gitlab.campbox.tech`,
+включить Package Registry и дать проекту доступ к раннеру с тегом
+`docker-executor`. Начальная рабочая ветка — `campbox`; сделать её default branch.
+
+```sh
+git remote add origin ssh://git@gitlab.campbox.tech:2222/tlcamp/content-cache.git
+git add .
+git commit -m 'feat: configure metadata limits and add GitLab releases'
+git push -u origin campbox
 ```
 
-```bash
-# Bundler — embed credentials in the mirror URL
-bundle config set --global mirror.https://rubygems.org \
-  http://x-token:$CACHE_TOKEN@cache.example.com/rubygems/
+`.gitlab-ci.yml` запускает проверки и сборку на push и MR. Когда у ветки уже
+есть MR, отдельный branch pipeline пропускается. CI использует только временный
+`CI_JOB_TOKEN`: постоянный токен для публикации не требуется.
+
+## Автоматический релиз
+
+После успешных проверок создать и отправить тег:
+
+```sh
+git tag -a v1.4.0-campbox.1 -m 'Campbox metadata limits and GitLab packaging'
+git push origin v1.4.0-campbox.1
 ```
 
-When `--oidc-policies` is set, requests must present a valid OIDC token whose claims match a trust policy that grants access to the requested protocol. Both Bearer and Basic auth (password = OIDC token) are accepted. See [OIDC Authentication](#oidc-authentication) below.
+Теги должны иметь вид `v<upstream-version>-campbox.<revision>`. По ним pipeline:
 
-When `--credentials-file` is set, the file is parsed as a Go template that produces JSON. Template functions resolve secrets from environment variables (`env`), files (`file`), or external stores like 1Password CLI (`op`). See the [Credentials File](#credentials-file) section for the full schema.
+1. Проверяет форматирование, `go vet`, Go-тесты с race detector и установщик.
+2. Собирает Linux amd64/arm64 с этой версией.
+3. Проверяет SHA256 всех файлов и публикует их в Generic Package Registry.
+4. Создаёт GitLab Release со ссылками на опубликованные файлы.
 
-### OIDC Authentication
+Публикация повторно допускается только для идентичного содержимого. Если файл
+с такой версией уже существует и отличается, job завершится ошибкой; для нового
+содержимого нужен новый тег. Публикации выполняются последовательно через
+`resource_group`. Исходные upstream-теги автоматически не публикуются.
+Job artifacts хранятся 14 дней; постоянные файлы релиза находятся в Package Registry.
 
-OIDC authentication allows CI/CD pipelines to use short-lived identity tokens rather than long-lived static secrets. Tokens are validated against the issuer's JWKS endpoint and then matched against trust policies that control per-protocol access.
+API загрузки файла:
 
-**Trust policy file** (`--oidc-policies`):
-
-```json
-{
-  "trust_policies": [
-    {
-      "name": "buildkite-myorg",
-      "issuer": "https://agent.buildkite.com",
-      "audience": ["https://cache.example.com"],
-      "required_claims": {
-        "organization_slug": "myorg"
-      },
-      "permissions": ["goproxy", "npm", "buildcache"]
-    },
-    {
-      "name": "github-actions-myorg",
-      "issuer": "https://token.actions.githubusercontent.com",
-      "audience": ["https://cache.example.com"],
-      "required_claims": {
-        "repository_owner": "myorg",
-        "ref": "refs/heads/*"
-      },
-      "permissions": ["goproxy", "npm"]
-    }
-  ]
-}
+```text
+https://gitlab.campbox.tech/api/v4/projects/<project-id>/packages/generic/content-cache/1.4.0-campbox.1/content-cache_linux_amd64
 ```
 
-**Policy fields:**
+Документация: [Generic Package Registry](https://docs.gitlab.com/user/packages/generic_packages/),
+[GitLab Releases](https://docs.gitlab.com/api/releases/).
 
-| Field | Description |
-|-------|-------------|
-| `name` | Human-readable policy name (appears in logs) |
-| `issuer` | OIDC issuer URL — must match the `iss` claim exactly |
-| `audience` | Allowed audience values — must match the `aud` claim. Omitting this field skips audience validation (not recommended) |
-| `required_claims` | Map of claim name → expected value. Supports `*` wildcard suffix (e.g. `"refs/heads/*"`) and lists |
-| `permissions` | Protocol names this policy grants: `goproxy`, `npm`, `oci`, `pypi`, `maven`, `rubygems`, `git`, `fetch`, `sumdb`, `buildcache`, `httpcache`, `admin`. Use `"*"` to grant all. |
+## Установка на сервер
 
-**Using OIDC tokens in CI/CD:**
+Сервис уже работает на `root@109.172.97.212`. Установщик обновляет бинарник
+и перезапускает существующий unit `content-cache.service`; запуск Go на сервере
+не требуется. Unit и пример настроек находятся в [deploy/](deploy/).
+Они используют текущий адрес `172.17.0.1:4874`, каталог `/var/lib/content-cache`,
+ограничения MemoryMax=4G/CPUQuota=300% и не задают NO_PROXY.
+Для изменения лимита создать `/etc/content-cache/content-cache.env` на основе
+`deploy/content-cache.env.example` и перезапустить сервис.
 
-Buildkite — request an OIDC token via the [Buildkite Agent OIDC plugin](https://buildkite.com/docs/agent/v3/cli-oidc) and pass it as a Bearer token:
+Создать deploy token проекта с правом `read_package_registry`. Передать его
+установщику через `CONTENT_CACHE_DEPLOY_TOKEN`, не через аргументы командной строки.
+Для ввода токена в bash:
 
-```bash
-TOKEN=$(buildkite-agent oidc request-token --audience https://cache.example.com)
-export GOPROXY=http://cache.example.com/goproxy
-export GONOSUMCHECK=*
-curl -H "Authorization: Bearer $TOKEN" http://cache.example.com/goproxy/...
+```sh
+read -rs -p 'GitLab deploy token: ' CONTENT_CACHE_DEPLOY_TOKEN; echo
+export CONTENT_CACHE_DEPLOY_TOKEN
+python3 scripts/install-release.py --project tlcamp/content-cache \
+  --version 1.4.0-campbox.1 --dry-run
+python3 scripts/install-release.py --project tlcamp/content-cache \
+  --version 1.4.0-campbox.1
+unset CONTENT_CACHE_DEPLOY_TOKEN
 ```
 
-GitHub Actions — the `id-token: write` permission exposes `ACTIONS_ID_TOKEN_REQUEST_URL`. Most package managers support setting a Bearer token via environment variables or config files; pass the token from `${{ steps.auth.outputs.token }}`.
+Вторую команду выполнять на сервере от root. Установщик определяет архитектуру,
+скачивает бинарник и SHA256SUMS через HTTPS, проверяет SHA256 и `--version`.
+`--dry-run` выполняет загрузку и проверки без изменения сервиса.
+Обновление блокируется файловым lock, останавливает сервис, сохраняет прежний
+бинарник и metadata.db, атомарно заменяет бинарник, запускает сервис и проверяет
+`/health`. Если запуск неуспешен, восстанавливает предыдущие бинарник и metadata.db.
+Архивы пакетов и настройки systemd сохраняются. Резервные копии:
+`/var/lib/content-cache/recovery/releases/<timestamp>/`.
 
-### Upstream Registry Options
+Установщик рассчитан на текущий локальный файловый Package Registry GitLab.
+Переадресация на другой домен запрещена, чтобы deploy token не уходил туда.
+При настройке object storage GitLab потребуется отдельно поддержать загрузку
+по подписанным URL без передачи токена.
 
-| Flag | Environment Variable | Default | Description |
-|------|---------------------|---------|-------------|
-| `--go-upstream` | `GO_UPSTREAM` | `proxy.golang.org` | Upstream Go module proxy URL |
-| `--npm-upstream` | `NPM_UPSTREAM` | `registry.npmjs.org` | Upstream NPM registry URL |
-| `--oci-upstream` | `OCI_UPSTREAM` | `registry-1.docker.io` | Upstream OCI registry URL |
-| `--pypi-upstream` | `PYPI_UPSTREAM` | `pypi.org/simple/` | Upstream PyPI Simple API URL |
-| `--maven-upstream` | `MAVEN_UPSTREAM` | `repo.maven.apache.org/maven2` | Upstream Maven repository URLs (repeat or comma-separate to add fallbacks, e.g. Clojars) |
-| `--rubygems-upstream` | `RUBYGEMS_UPSTREAM` | `rubygems.org` | Upstream RubyGems registry URL |
+Для нового хоста сначала создать системного пользователя `content-cache`, каталог
+`/var/lib/content-cache` с его владельцем и установить unit из `deploy/`.
+Затем выполнить `systemctl daemon-reload`, `systemctl enable content-cache` и
+запустить установщик релиза. Docker должен быть запущен и иметь bridge `172.17.0.1`.
 
-### Fetch Cache Options
+## Проверка после установки
 
-| Flag | Environment Variable | Default | Description |
-|------|---------------------|---------|-------------|
-| `--fetch-allowed-hosts` | `FETCH_ALLOWED_HOSTS` | | Comma-separated list of allowed upstream hosts for `/fetch/{host}/...` |
+Дважды запросить крупные метаданные, затем посмотреть записи `cache_result`:
 
-### OCI Options
-
-| Flag | Environment Variable | Default | Description |
-|------|---------------------|---------|-------------|
-| `--oci-prefix` | `OCI_PREFIX` | `docker-hub` | Routing prefix for the OCI registry (appears in URL path as `/v2/{prefix}/...`) |
-| `--oci-tag-ttl` | `OCI_TAG_TTL` | `5m` | TTL for OCI tag→digest cache mappings |
-
-OCI registry credentials (username/password) are configured via the credentials file. When the credentials file defines `oci.registries[]`, the `--oci-upstream` and `--oci-prefix` CLI flags are ignored.
-
-### Metadata TTL Options
-
-| Flag | Environment Variable | Default | Description |
-|------|---------------------|---------|-------------|
-| `--pypi-metadata-ttl` | `PYPI_METADATA_TTL` | `5m` | TTL for PyPI project metadata cache |
-| `--maven-metadata-ttl` | `MAVEN_METADATA_TTL` | `5m` | TTL for maven-metadata.xml cache |
-| `--rubygems-metadata-ttl` | `RUBYGEMS_METADATA_TTL` | `5m` | TTL for RubyGems metadata cache |
-| `--fetch-metadata-ttl` | `FETCH_METADATA_TTL` | `24h` | TTL for direct download cache metadata under `/fetch` and `/github-release` |
-
-### Git Proxy Options
-
-| Flag | Environment Variable | Default | Description |
-|------|---------------------|---------|-------------|
-| `--git-allowed-hosts` | `GIT_ALLOWED_HOSTS` | | Comma-separated list of allowed Git upstream hosts (e.g., `github.com,gitlab.com`) |
-| `--git-max-request-body` | `GIT_MAX_REQUEST_BODY` | `104857600` | Maximum git-upload-pack request body size in bytes (100MB) |
-| `--git-upstream-auth-trusted-single-tenant` | `GIT_UPSTREAM_AUTH_TRUSTED_SINGLE_TENANT` | `false` | Allow GitHub App upstream Git credentials without repo-level caller authorization. Only safe for trusted single-tenant deployments. |
-
-### HTTP Build Cache Options (sccache / Gradle)
-
-| Flag | Environment Variable | Default | Description |
-|------|---------------------|---------|-------------|
-| `--httpcache-ttl` | `HTTPCACHE_TTL` | `24h` | TTL for cached build artifacts |
-
-Point clients at `http://host/httpcache/`.
-
-### Cache Management
-
-| Flag | Environment Variable | Default | Description |
-|------|---------------------|---------|-------------|
-| `--blob-retention` | `BLOB_RETENTION` | `24h` | Minimum time to retain blobs after last access before GC may delete them (0 to disable) |
-| `--cache-max-size` | `CACHE_MAX_SIZE` | `10737418240` | Maximum cache size in bytes (10GB, 0 to disable) |
-| `--expiry-check-interval` | `EXPIRY_CHECK_INTERVAL` | `1h` | How often to check for expired content |
-| `--gc-interval` | `GC_INTERVAL` | `1h` | How often to run garbage collection |
-| `--gc-startup-delay` | `GC_STARTUP_DELAY` | `5m` | Delay before first GC run after startup |
-
-### Logging Options
-
-| Flag | Environment Variable | Default | Description |
-|------|---------------------|---------|-------------|
-| `--log-level` | `LOG_LEVEL` | `info` | Log level: `debug`, `info`, `warn`, `error` |
-| `--log-format` | `LOG_FORMAT` | `text` | Log format: `text`, `json` |
-
-### Metrics Options
-
-The Prometheus `/metrics` endpoint is controlled by a flag. OTLP export is configured entirely via the [standard OpenTelemetry environment variables](https://opentelemetry.io/docs/specs/otel/protocol/exporter/) so content-cache behaves like any other OTel-instrumented application — and so the OpenTelemetry Operator's `instrumentation.opentelemetry.io/inject-sdk` annotation works out of the box.
-
-| Flag | Environment Variable | Default | Description |
-|------|---------------------|---------|-------------|
-| `--metrics-prometheus` | `METRICS_PROMETHEUS` | `false` | Enable Prometheus `/metrics` endpoint |
-
-**OTLP export** is enabled iff one of `OTEL_EXPORTER_OTLP_ENDPOINT` or `OTEL_EXPORTER_OTLP_METRICS_ENDPOINT` is set. Supported env vars (see the [OTLP exporter spec](https://opentelemetry.io/docs/specs/otel/protocol/exporter/) for full semantics):
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `OTEL_SERVICE_NAME` | `content-cache` | Service name resource attribute |
-| `OTEL_RESOURCE_ATTRIBUTES` | | Additional resource attributes (e.g., `k8s.namespace.name=...`) |
-| `OTEL_EXPORTER_OTLP_ENDPOINT` | | OTLP endpoint URL (applies to all signals) |
-| `OTEL_EXPORTER_OTLP_METRICS_ENDPOINT` | | Metrics-specific OTLP endpoint (wins over the general one) |
-| `OTEL_EXPORTER_OTLP_PROTOCOL` | `http/protobuf` | Transport: `grpc` or `http/protobuf` |
-| `OTEL_EXPORTER_OTLP_METRICS_PROTOCOL` | | Metrics-specific protocol (wins over the general one) |
-| `OTEL_EXPORTER_OTLP_HEADERS` | | Comma-separated `key=value` headers (e.g., auth tokens) |
-| `OTEL_EXPORTER_OTLP_INSECURE` | `false` | Disable TLS for the OTLP connection |
-| `OTEL_EXPORTER_OTLP_COMPRESSION` | | `gzip` to enable compression |
-| `OTEL_EXPORTER_OTLP_TIMEOUT` | `10000` | Per-export timeout in milliseconds |
-| `OTEL_METRIC_EXPORT_INTERVAL` | `60000` | Export interval in milliseconds |
-
-### Debug Options
-
-| Flag | Environment Variable | Default | Description |
-|------|---------------------|---------|-------------|
-| `--pprof-address` | `PPROF_ADDRESS` | | Address for the pprof HTTP server (e.g., `localhost:6060`); disabled if empty |
-
-### Example: Command Line
-
-```bash
-# Basic usage with inbound auth
-./content-cache serve \
-  --listen :8080 \
-  --storage /var/cache/content-cache \
-  --auth-token-file /run/secrets/auth-token \
-  --cache-ttl 336h \
-  --log-level debug \
-  --log-format json \
-  --metrics-prometheus
-
-# With upstream credentials via credentials file
-./content-cache serve \
-  --listen :8080 \
-  --storage /var/cache/content-cache \
-  --auth-token-file /run/secrets/auth-token \
-  --credentials-file /etc/content-cache/credentials.json.tmpl \
-  --git-allowed-hosts github.com,gitlab.com \
-  --cache-ttl 336h \
-  --log-format json \
-  --metrics-prometheus
+```sh
+curl --noproxy '*' -fsS -o /dev/null 'http://172.17.0.1:4874/npm/@types%2Fnode'
+curl --noproxy '*' -fsS -o /dev/null 'http://172.17.0.1:4874/npm/@types%2Fnode'
+journalctl -u content-cache --since '2 minutes ago' --no-pager
 ```
 
-### Example: Container Deployment
+Метаданные сохраняются до выдачи ответа: после первого успешного сохранения
+следующий запрос должен получить `hit`.
 
-```yaml
-# docker-compose.yml
-services:
-  content-cache:
-    image: content-cache:latest
-    command: ["serve"]
-    ports:
-      - "8080:8080"
-    volumes:
-      - cache-data:/data
-      - ./secrets/auth-token:/run/secrets/auth-token:ro
-      - ./config/credentials.json.tmpl:/etc/content-cache/credentials.json.tmpl:ro
-    environment:
-      LISTEN_ADDRESS: ":8080"
-      CACHE_STORAGE: "/data"
-      CACHE_TTL: "336h"
-      CACHE_MAX_SIZE: "21474836480"
-      LOG_LEVEL: "info"
-      LOG_FORMAT: "json"
-      METRICS_PROMETHEUS: "true"
-      AUTH_TOKEN_FILE: "/run/secrets/auth-token"
-      CREDENTIALS_FILE: "/etc/content-cache/credentials.json.tmpl"
-      GIT_ALLOWED_HOSTS: "github.com"
-
-volumes:
-  cache-data:
-```
-
-```yaml
-# Kubernetes ConfigMap + Secret
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: content-cache-config
-data:
-  LISTEN_ADDRESS: ":8080"
-  CACHE_STORAGE: "/data"
-  CACHE_TTL: "168h"
-  LOG_LEVEL: "info"
-  LOG_FORMAT: "json"
-  METRICS_PROMETHEUS: "true"
-  GIT_ALLOWED_HOSTS: "github.com"
----
-apiVersion: v1
-kind: Secret
-metadata:
-  name: content-cache-secrets
-type: Opaque
-stringData:
-  auth-token: "my-inbound-auth-token"
-```
-
-## Credentials File
-
-The credentials file is a Go `text/template` that produces JSON. Template functions resolve secrets from external stores at startup. All upstream credentials (NPM, Git, OCI) are configured here — there are no per-protocol credential CLI flags.
-
-### Template Functions
-
-| Function | Description | Example |
-|----------|-------------|---------|
-| `env "KEY"` | Read environment variable (error if unset) | `{{ env "NPM_TOKEN" \| json }}` |
-| `envDefault "KEY" "fallback"` | Read env var with default | `{{ envDefault "REGION" "us-east-1" }}` |
-| `file "/path"` | Read and trim file contents | `{{ file "/run/secrets/token" \| json }}` |
-| `json` | JSON-encode a string value (pipe) | `{{ env "TOKEN" \| json }}` |
-| `op "reference"` | Read from 1Password CLI | `{{ op "op://vault/item/field" \| json }}` |
-
-### Example Credentials File
-
-```json
-{
-  "auth_token": {{ env "AUTH_TOKEN" | json }},
-
-  "npm": {
-    "routes": [
-      {
-        "match": { "scope": "@mycompany" },
-        "registry_url": "https://npm.pkg.github.com",
-        "token": {{ env "NPM_TOKEN" | json }}
-      },
-      {
-        "match": { "any": true },
-        "registry_url": "https://registry.npmjs.org"
-      }
-    ]
-  },
-
-  "git": {
-    "routes": [
-      {
-        "match": { "repo_prefix": "github.com/orgA/" },
-        "username": "x-access-token",
-        "password": {{ env "GIT_PAT" | json }}
-      },
-      {
-        "match": { "repo_prefix": "github.com/orgB/" },
-        "github_app": {
-          "app_id": "12345",
-          "installation_id": "67890",
-          "private_key": {{ file "/run/secrets/github-app-private-key.pem" | json }},
-          "token_scope": "requested_repo"
-        }
-      },
-      {
-        "match": { "any": true }
-      }
-    ]
-  },
-
-  "oci": {
-    "registries": [
-      {
-        "prefix": "docker-hub",
-        "upstream": "https://registry-1.docker.io"
-      },
-      {
-        "prefix": "ghcr",
-        "upstream": "https://ghcr.io",
-        "username": {{ env "GHCR_USER" | json }},
-        "password": {{ env "GHCR_PASS" | json }}
-      }
-    ]
-  }
-}
-```
-
-### Routing Rules
-
-- **NPM**: Routes match by package scope (e.g., `@mycompany`). The last route must have `"any": true` as a catch-all. Scopes must start with `@` and must not be duplicated.
-- **Git**: Routes match by repo prefix (e.g., `github.com/orgA/`). Prefixes must end with `/` to prevent ambiguous matching. The last route must have `"any": true` as a catch-all. A route may use either static `username`/`password` credentials or a `github_app` block, not both. GitHub App routes only support `github.com` and request installation tokens scoped to the requested repo with `token_scope: "requested_repo"`.
-- **OCI**: Uses prefix-based routing (e.g., `docker-hub`, `ghcr`). Each registry entry defines its own upstream URL and optional credentials.
-
-All sections are optional — omit any protocol section to use the default upstream with no auth.
-
-## Storage Layout
-
-```
-./cache/
-├── blobs/                   # Content-addressable storage
-│   └── 58/                  # Sharded by first 2 hex digits of hash
-│       └── 5818f08e...      # Full BLAKE3 hash as filename
-├── goproxy/                 # Go module index
-│   └── github.com/
-│       └── pkg/
-│           └── errors/
-│               └── @v/
-│                   ├── list          # Available versions
-│                   ├── v0.9.1.info   # Version metadata
-│                   └── v0.9.1.mod    # go.mod content
-├── npm/                     # NPM package index
-│   └── express/
-│       ├── metadata.json    # Package metadata
-│       └── versions/
-│           └── 4.18.2/
-│               └── tarball  # Reference to blob
-├── pypi/                    # PyPI package index
-│   └── projects/
-│       └── requests/
-│           └── metadata.json  # Project files and hashes
-├── maven/                   # Maven artifact index
-│   ├── metadata/
-│   │   └── org/apache/commons/
-│   │       └── commons-lang3/
-│   │           └── metadata.json  # maven-metadata.xml cache
-│   └── artifacts/
-│       └── org/apache/commons/
-│           └── commons-lang3/
-│               └── 3.12.0/
-│                   └── commons-lang3-3.12.0.jar.json  # Artifact reference
-├── rubygems/                # RubyGems index
-│   ├── versions.json        # Cached /versions metadata
-│   ├── versions             # Raw /versions file content
-│   ├── info/
-│   │   └── rails.json       # Per-gem metadata with checksums
-│   ├── specs/
-│   │   └── specs.4.8.gz     # Legacy specs files
-│   └── gems/
-│       └── rails-7.1.0.gem.json  # Gem file references
-├── oci/                     # OCI image index (prefix-scoped)
-│   └── docker-hub/
-│       └── library/
-│           └── alpine/
-│               ├── manifests/
-│               │   └── sha256:abc...    # Image manifests
-│               └── blobs/
-│                   └── sha256:def...    # Layer references
-└── meta.db                  # BoltDB metadata index (git pack cache, etc.)
-```
-
-## Development
-
-```bash
-# Install the pinned toolchain
-mise install
-
-# Run tests
-mise run test
-
-# Run lint (matches CI)
-mise run lint
-
-# Run with debug logging
-./content-cache serve --log-level debug
-
-# Test the Go proxy endpoint
-curl http://localhost:8080/goproxy/github.com/pkg/errors/@v/v0.9.1.info
-
-# Test the NPM registry endpoint
-curl http://localhost:8080/npm/express
-
-# Test the PyPI Simple API endpoint
-curl http://localhost:8080/pypi/simple/requests/
-
-# Test the Maven repository endpoint
-curl http://localhost:8080/maven/org/apache/commons/commons-lang3/maven-metadata.xml
-
-# Test the RubyGems registry endpoint (Compact Index)
-curl http://localhost:8080/rubygems/versions
-curl http://localhost:8080/rubygems/info/rails
-
-# Test the Git proxy endpoint (requires --git-allowed-hosts github.com)
-git clone http://localhost:8080/git/github.com/buildkite/content-cache.git /tmp/test-clone
-
-# Test the OCI registry endpoint (version check)
-curl http://localhost:8080/v2/
-
-# Test an OCI manifest request (uses prefix-based routing)
-curl http://localhost:8080/v2/docker-hub/library/alpine/manifests/latest
-
-# Test the HTTP build cache endpoint (sccache / Gradle)
-curl -X PUT http://localhost:8080/httpcache/abc123 --data-binary "artifact data"
-curl -v http://localhost:8080/httpcache/abc123   # 200 on hit
-curl -v http://localhost:8080/httpcache/missing  # 404 on miss
-
-# Health check
-curl http://localhost:8080/health
-
-# Check cache statistics (requires cache-ttl or cache-max-size to be set)
-curl http://localhost:8080/stats
-
-# View cached content size on disk
-ls -lh ./cache/blobs/
-```
-
-## Metrics & Observability
-
-content-cache exports OpenTelemetry metrics for monitoring cache effectiveness.
-
-### Metrics Exported
-
-| Metric | Type | Description |
-|--------|------|-------------|
-| `content_cache_http_requests_total` | Counter | Total requests by protocol, endpoint, cache_result, status |
-| `content_cache_http_response_bytes_total` | Counter | Bytes served by protocol, endpoint, cache_result, status |
-| `content_cache_http_request_duration_seconds` | Histogram | Request latency by protocol, endpoint, cache_result, status |
-
-### Labels
-
-- `protocol`: npm, pypi, goproxy, sumdb, maven, rubygems, oci, git, buildcache, httpcache
-- `endpoint`: metadata, tarball, artifact, blob, manifest, etc.
-- `cache_result`: hit, miss, bypass
-- `status_class`: 2xx, 3xx, 4xx, 5xx
-
-### Example Queries (PromQL)
-
-```promql
-# Cache hit rate by protocol
-sum(rate(content_cache_http_requests_total{cache_result="hit"}[5m])) by (protocol)
-/ sum(rate(content_cache_http_requests_total{cache_result=~"hit|miss"}[5m])) by (protocol)
-
-# Bandwidth served from cache (bytes/sec)
-sum(rate(content_cache_http_response_bytes_total{cache_result="hit"}[5m]))
-
-# P95 latency comparison: cache hits vs misses
-histogram_quantile(0.95, 
-  sum(rate(content_cache_http_request_duration_seconds_bucket[5m])) by (le, cache_result)
-)
-
-# Total bandwidth saved (approximate, cumulative)
-sum(content_cache_http_response_bytes_total{cache_result="hit"})
-```
-
-### Structured Logging
-
-With `-log-format json`, logs include fields for analysis:
-
-```json
-{
-  "level": "INFO",
-  "msg": "http request",
-  "protocol": "npm",
-  "endpoint": "tarball",
-  "cache_result": "hit",
-  "status": 200,
-  "status_class": "2xx",
-  "bytes_sent": 528640,
-  "duration_ms": 12,
-  "request_id": "550e8400-e29b-41d4-a716-446655440000"
-}
-```
-
-## Goals
-
-- Simple and efficient content storage and retrieval
-- Automatic deduplication (same content stored once)
-- Content retrieval by BLAKE3 hash
-- Multiple storage backends (filesystem, S3)
-- TTL and S3-FIFO size-based eviction
-- Compression support
-- Observability (metrics, traces, logs)
-
-## Disclosure
-
-This project was developed with AI, specifically Claude, from [Anthropic](https://www.anthropic.com/).
-
-## License
-
-Apache License, Version 2.0 - Copyright [Mark Wolfe](mailto:mark.wolfe@buildkite.com)
+Сравнение сторонних форков и кандидаты для следующих улучшений: [FORKS.md](FORKS.md).

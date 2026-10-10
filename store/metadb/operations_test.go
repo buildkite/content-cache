@@ -161,7 +161,7 @@ func TestEnvelopeStats(t *testing.T) {
 		ContentType:     ContentType_CONTENT_TYPE_JSON,
 		ContentEncoding: ContentEncoding_CONTENT_ENCODING_ZSTD,
 		Payload:         []byte(`compressed`),
-		PayloadSize:     1000,
+		PayloadSize:     96 * 1024 * 1024,
 		FetchedAtUnixMs: now.UnixMilli(),
 		ExpiresAtUnixMs: now.Add(-time.Minute).UnixMilli(),
 	}
@@ -186,7 +186,7 @@ func TestEnvelopeStats(t *testing.T) {
 	require.Equal(t, int64(3), stats.EnvelopeCount)
 	require.Equal(t, int64(1), stats.BlobCount)
 	require.Equal(t, int64(1), stats.ExpiredCount)
-	require.Equal(t, int64(1015), stats.TotalPayloadSize)
+	require.Equal(t, int64(96*1024*1024+15), stats.TotalPayloadSize)
 	require.Equal(t, int64(1), stats.CompressedCount)
 	require.Equal(t, int64(1), stats.NegativeCacheCount)
 

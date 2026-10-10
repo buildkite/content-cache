@@ -78,6 +78,30 @@ func TestEnvelopeCodec_PayloadTooLarge(t *testing.T) {
 	require.ErrorIs(t, err, ErrPayloadTooLarge)
 }
 
+func TestEnvelopeCodecConfiguredLimit(t *testing.T) {
+	codec, err := NewEnvelopeCodec(WithMaxPayloadSize(4096))
+	require.NoError(t, err)
+	defer codec.Close()
+	data := []byte(strings.Repeat("x", 4096))
+	payload, encoding, digest, err := codec.EncodePayload(data)
+	require.NoError(t, err)
+	decoded, err := codec.DecodePayload(payload, encoding, digest, uint64(len(data)))
+	require.NoError(t, err)
+	require.Equal(t, data, decoded)
+	_, _, _, err = codec.EncodePayload(make([]byte, 4097))
+	require.ErrorIs(t, err, ErrPayloadTooLarge)
+	for _, encoding := range []ContentEncoding{ContentEncoding_CONTENT_ENCODING_IDENTITY, ContentEncoding_CONTENT_ENCODING_ZSTD} {
+		_, err = codec.DecodePayload(nil, encoding, "", 4097)
+		require.ErrorIs(t, err, ErrDecompressionBomb)
+	}
+	_, err = codec.DecodePayload(make([]byte, 4097), ContentEncoding_CONTENT_ENCODING_IDENTITY, "", 0)
+	require.ErrorIs(t, err, ErrDecompressionBomb)
+	for _, limit := range []int{0, -1, MaxAllowedPayloadSize + 1} {
+		_, err = NewEnvelopeCodec(WithMaxPayloadSize(limit))
+		require.Error(t, err)
+	}
+}
+
 func TestEnvelopeCodec_DigestVerification(t *testing.T) {
 	codec, err := NewEnvelopeCodec()
 	require.NoError(t, err)

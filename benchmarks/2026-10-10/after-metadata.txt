@@ -1,0 +1,20 @@
+goos: linux
+goarch: amd64
+pkg: github.com/buildkite/content-cache/store/metadb
+cpu: Intel(R) Xeon(R) Gold 6240 CPU @ 2.60GHz
+BenchmarkMetadataDisk/writers=1-4         	     862	   1266465 ns/op	         1.000 commits/op	      1539 p50-us	      1631 p95-us	   43894 B/op	     158 allocs/op
+BenchmarkMetadataDisk/writers=1-4         	     921	   1370475 ns/op	         1.000 commits/op	      1566 p50-us	      1682 p95-us	   43920 B/op	     158 allocs/op
+BenchmarkMetadataDisk/writers=1-4         	     848	   1389052 ns/op	         1.000 commits/op	      1584 p50-us	      1701 p95-us	   43872 B/op	     158 allocs/op
+BenchmarkMetadataDisk/writers=1-4         	     926	   1324709 ns/op	         1.000 commits/op	      1553 p50-us	      1652 p95-us	   43919 B/op	     158 allocs/op
+BenchmarkMetadataDisk/writers=1-4         	     898	   1243618 ns/op	         1.000 commits/op	      1542 p50-us	      1674 p95-us	   43950 B/op	     158 allocs/op
+BenchmarkMetadataDisk/writers=4-4         	    2581	    450299 ns/op	         0.2507 commits/op	      1760 p50-us	      2049 p95-us	   22397 B/op	      70 allocs/op
+BenchmarkMetadataDisk/writers=4-4         	    2631	    447477 ns/op	         0.2505 commits/op	      1763 p50-us	      2003 p95-us	   22381 B/op	      70 allocs/op
+BenchmarkMetadataDisk/writers=4-4         	    2647	    444929 ns/op	         0.2505 commits/op	      1753 p50-us	      1951 p95-us	   22392 B/op	      70 allocs/op
+BenchmarkMetadataDisk/writers=4-4         	    2737	    443543 ns/op	         0.2503 commits/op	      1749 p50-us	      1967 p95-us	   22373 B/op	      70 allocs/op
+BenchmarkMetadataDisk/writers=4-4         	    2595	    442693 ns/op	         0.2513 commits/op	      1737 p50-us	      1926 p95-us	   22402 B/op	      70 allocs/op
+BenchmarkMetadataDisk/writers=16-4        	    7994	    126497 ns/op	         0.06267 commits/op	      1958 p50-us	      2426 p95-us	   15270 B/op	      45 allocs/op
+BenchmarkMetadataDisk/writers=16-4        	    8067	    132197 ns/op	         0.06285 commits/op	      2019 p50-us	      3024 p95-us	   15266 B/op	      45 allocs/op
+BenchmarkMetadataDisk/writers=16-4        	    9344	    131536 ns/op	         0.06261 commits/op	      2021 p50-us	      2694 p95-us	   15272 B/op	      45 allocs/op
+BenchmarkMetadataDisk/writers=16-4        	    8655	    137375 ns/op	         0.06262 commits/op	      2016 p50-us	      3105 p95-us	   15258 B/op	      45 allocs/op
+BenchmarkMetadataDisk/writers=16-4        	    7936	    129301 ns/op	         0.06263 commits/op	      2016 p50-us	      2410 p95-us	   15256 B/op	      45 allocs/op
+PASS

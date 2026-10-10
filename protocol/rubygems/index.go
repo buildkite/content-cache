@@ -83,7 +83,7 @@ func (idx *Index) GetVersions(ctx context.Context) (*CachedVersions, []byte, err
 	meta := &CachedVersions{
 		ETag:       env.Etag,
 		ReprDigest: extractReprDigest(env),
-		Size:       min(int64(env.PayloadSize), metadb.MaxPayloadSize), //nolint:gosec // bounded by MaxPayloadSize
+		Size:       min(int64(env.PayloadSize), metadb.MaxAllowedPayloadSize), //nolint:gosec // bounded by MaxAllowedPayloadSize
 		CachedAt:   time.UnixMilli(env.FetchedAtUnixMs),
 		UpdatedAt:  time.UnixMilli(env.FetchedAtUnixMs),
 	}
@@ -161,7 +161,7 @@ func (idx *Index) GetInfo(ctx context.Context, gem string) (*CachedGemInfo, []by
 		Name:       gem,
 		ETag:       env.Etag,
 		ReprDigest: extractReprDigest(env),
-		Size:       min(int64(env.PayloadSize), metadb.MaxPayloadSize), //nolint:gosec // bounded by MaxPayloadSize
+		Size:       min(int64(env.PayloadSize), metadb.MaxAllowedPayloadSize), //nolint:gosec // bounded by MaxAllowedPayloadSize
 		CachedAt:   time.UnixMilli(env.FetchedAtUnixMs),
 		UpdatedAt:  time.UnixMilli(env.FetchedAtUnixMs),
 	}
@@ -224,7 +224,7 @@ func (idx *Index) GetSpecs(ctx context.Context, specsType string) (*CachedSpecs,
 		Type:       specsType,
 		ETag:       env.Etag,
 		ReprDigest: extractReprDigest(env),
-		Size:       min(int64(env.PayloadSize), metadb.MaxPayloadSize), //nolint:gosec // bounded by MaxPayloadSize
+		Size:       min(int64(env.PayloadSize), metadb.MaxAllowedPayloadSize), //nolint:gosec // bounded by MaxAllowedPayloadSize
 		CachedAt:   time.UnixMilli(env.FetchedAtUnixMs),
 		UpdatedAt:  time.UnixMilli(env.FetchedAtUnixMs),
 	}

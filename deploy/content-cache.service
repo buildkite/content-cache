@@ -1,0 +1,28 @@
+[Unit]
+Description=Campbox content-cache npm proxy
+After=network-online.target docker.service
+Wants=network-online.target
+Requires=docker.service
+
+[Service]
+Type=simple
+User=content-cache
+Group=content-cache
+WorkingDirectory=/var/lib/content-cache
+ExecStart=/usr/local/bin/content-cache serve --listen=172.17.0.1:4874 --storage=/var/lib/content-cache --npm-metadata-ttl=1h --cache-max-size=2147483648 --blob-retention=24h
+Environment=GOMEMLIMIT=768MiB
+Environment=METADATA_MAX_SIZE=67108864
+EnvironmentFile=-/etc/content-cache/content-cache.env
+Restart=on-failure
+RestartSec=3s
+MemoryMax=4G
+MemorySwapMax=256M
+CPUQuota=300%
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/content-cache
+
+[Install]
+WantedBy=multi-user.target

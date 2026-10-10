@@ -2,6 +2,9 @@
 /content-cache
 # Added by goreleaser init:
 dist/
+.cache/
+__pycache__/
+*.pyc
 .envrc
 /.cert
 dev/data/

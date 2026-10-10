@@ -203,7 +203,7 @@ func (b *BoltDB) EnvelopeStats(ctx context.Context) (*EnvelopeDBStats, error) {
 					continue
 				}
 
-				stats.TotalPayloadSize += min(int64(env.PayloadSize), MaxPayloadSize) //nolint:gosec // bounded by MaxPayloadSize
+				stats.TotalPayloadSize += min(int64(env.PayloadSize), MaxAllowedPayloadSize) //nolint:gosec // bounded by MaxAllowedPayloadSize
 
 				if env.ContentEncoding == ContentEncoding_CONTENT_ENCODING_ZSTD {
 					stats.CompressedCount++

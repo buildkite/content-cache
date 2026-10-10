@@ -23,7 +23,7 @@ import (
 )
 
 const (
-	// cacheTimeout is the maximum time allowed for background caching operations.
+	// cacheTimeout bounds shared metadata fetches and background cache writes.
 	cacheTimeout = 5 * time.Minute
 )
 
@@ -39,6 +39,9 @@ type Handler struct {
 	router     *Router
 	logger     *slog.Logger
 	downloader *download.Downloader
+
+	metadataMu      sync.Mutex
+	metadataFlights map[string]*metadataFetch
 
 	// Lifecycle management for background goroutines
 	wg             sync.WaitGroup
@@ -84,12 +87,13 @@ func NewHandler(index *Index, store store.Store, opts ...HandlerOption) *Handler
 	shutdownCtx, shutdownCancel := context.WithCancel(context.Background())
 	defaultRouter, _ := NewRouter(nil, WithFallback(NewUpstream()))
 	h := &Handler{
-		index:          index,
-		store:          store,
-		router:         defaultRouter,
-		logger:         slog.Default(),
-		shutdownCtx:    shutdownCtx,
-		shutdownCancel: shutdownCancel,
+		index:           index,
+		store:           store,
+		router:          defaultRouter,
+		logger:          slog.Default(),
+		shutdownCtx:     shutdownCtx,
+		shutdownCancel:  shutdownCancel,
+		metadataFlights: make(map[string]*metadataFetch),
 	}
 	for _, opt := range opts {
 		opt(h)
@@ -100,6 +104,10 @@ func NewHandler(index *Index, store store.Store, opts ...HandlerOption) *Handler
 // Close shuts down the handler and waits for background operations to complete.
 func (h *Handler) Close() {
 	h.shutdownCancel()
+	// Finish registering metadata workers before waiting; no new workers may
+	// start after shutdownCtx is cancelled.
+	h.metadataMu.Lock()
+	h.metadataMu.Unlock()
 	h.wg.Wait()
 }
 
@@ -139,6 +147,9 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) handleMetadata(w http.ResponseWriter, r *http.Request, name string) {
 	ctx := r.Context()
 	logger := h.logger.With("package", name, "endpoint", "metadata")
+	if ctx.Err() != nil {
+		return
+	}
 
 	// Tag request for logging
 	telemetry.SetEndpoint(r, "metadata")
@@ -159,59 +170,35 @@ func (h *Handler) handleMetadata(w http.ResponseWriter, r *http.Request, name st
 		logger.Error("cache read failed", "error", err)
 	}
 
-	// Fetch from upstream: decode directly without buffering raw bytes
-	logger.Debug("cache miss, fetching from upstream")
 	telemetry.SetCacheResult(r, telemetry.CacheMiss)
-	upstream := h.router.Match(name)
-	meta, err := upstream.FetchPackageMetadataDecoded(ctx, name)
+	flight, coalesced, err := h.startMetadataFetch(name)
 	if err != nil {
-		if errors.Is(err, ErrNotFound) {
+		return // Handler is shutting down.
+	}
+	if coalesced {
+		telemetry.SetCacheResult(r, telemetry.CacheCoalesced)
+		logger.Debug("waiting for shared metadata fetch")
+	}
+	select {
+	case <-ctx.Done():
+		return // This client may leave without cancelling the shared fetch.
+	case <-flight.done:
+	}
+	if flight.err != nil {
+		if errors.Is(flight.err, ErrNotFound) {
 			http.Error(w, "not found", http.StatusNotFound)
 			return
 		}
-		logger.Error("upstream fetch failed", "error", err)
+		logger.Error("metadata fetch failed", "error", flight.err)
 		http.Error(w, "upstream error", http.StatusBadGateway)
 		return
 	}
-
-	// Rewrite tarball URLs, then encode the full metadata for caching.
-	h.rewriteTarballURLs(r, meta)
-
-	encoded, err := json.Marshal(meta)
-	if err != nil {
-		logger.Error("failed to encode metadata", "error", err)
-		http.Error(w, "internal error", http.StatusInternalServerError)
-		return
+	if flight.cached {
+		telemetry.SetCacheResult(r, telemetry.CacheHit)
 	}
-
-	// Cache the full URL-rewritten bytes asynchronously. We always cache the
-	// full form so that abbreviated and full requests share one cache entry.
-	h.wg.Go(func() {
-		cacheCtx, cancel := context.WithTimeout(h.shutdownCtx, cacheTimeout)
-		defer cancel()
-		if err := h.index.PutPackageMetadata(cacheCtx, name, encoded); err != nil {
-			logger.Error("failed to cache metadata", "error", err)
-		} else {
-			logger.Debug("cached metadata")
-		}
-	})
-
-	// Abbreviate only for the response, never for the cached copy.
-	response := encoded
-	if abbreviated {
-		abbrevMeta := h.abbreviateMetadata(meta)
-		response, err = json.Marshal(abbrevMeta)
-		if err != nil {
-			logger.Error("failed to encode abbreviated metadata", "error", err)
-			http.Error(w, "internal error", http.StatusInternalServerError)
-			return
-		}
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	if _, err := w.Write(response); err != nil {
-		logger.Error("failed to write response", "error", err)
-	}
+	// Shared bytes contain full upstream URLs. Decode and rewrite per client;
+	// clients may use different hosts, schemes and Accept headers.
+	h.writeMetadataResponse(w, r, name, flight.data, abbreviated, logger)
 }
 
 // writeMetadataResponse writes the metadata response, optionally rewriting tarball URLs.
